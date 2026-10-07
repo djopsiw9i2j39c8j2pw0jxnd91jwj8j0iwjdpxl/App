@@ -359,6 +359,7 @@ class MacroService : AccessibilityService() {
     }
 
     private fun enterEdit() {
+        cancelChain()
         mode = Mode.EDIT
         selectedId = -1
         listOpen = false
@@ -953,41 +954,91 @@ class MacroService : AccessibilityService() {
 
     // ---------------------------------------------------------------- chạy macro
 
+    private var chainGen = 0
+    private var chainRunning = false
+
     private fun cancelChain() {
+        chainGen++
+        chainRunning = false
         handler.removeCallbacksAndMessages(chainToken)
     }
 
-    /** main số [mainNo] được kích hoạt -> lần lượt bấm vào các nút 1, 2, 3... đã liên kết. */
+    /**
+     * main số [mainNo] được kích hoạt -> lần lượt bấm vào các nút 1, 2, 3... đã liên kết.
+     * Các cú chạm đi TUẦN TỰ: cú sau chỉ được gửi khi cú trước đã xong (tránh nghẽn hàng đợi
+     * cử chỉ làm đơ màn hình / không xoay được camera).
+     */
     private fun runChain(mainNo: Int) {
-        cancelChain()
-        val seq = buttons
+        if (chainRunning) return // đang chạy dở thì bỏ qua lần bấm dồn
+        val ids = buttons
             .filter { it.kind == Kind.NUM && it.mainNo == mainNo }
             .sortedBy { it.number }
-        if (seq.isEmpty()) return
-        var t = SystemClock.uptimeMillis()
-        for (b in seq) {
-            t += b.delayMs.toLong()
-            val id = b.id
-            handler.postAtTime({ tapButton(id) }, chainToken, t)
-        }
+            .map { it.id }
+        if (ids.isEmpty()) return
+        chainGen++
+        chainRunning = true
+        stepChain(chainGen, ids, 0)
     }
 
-    private fun tapButton(id: Int) {
-        if (mode != Mode.RUN) return
-        val v = btnViews[id] ?: return
-        if (!v.isAttachedToWindow) return
+    private fun stepChain(gen: Int, ids: List<Int>, i: Int) {
+        if (gen != chainGen) return
+        if (i >= ids.size || mode != Mode.RUN) {
+            chainRunning = false
+            return
+        }
+        val b = buttons.firstOrNull { it.id == ids[i] }
+        if (b == null) {
+            stepChain(gen, ids, i + 1)
+            return
+        }
+        val wait = maxOf(b.delayMs, 30).toLong()
+        handler.postAtTime({
+            if (gen == chainGen) {
+                tapButton(b.id) { stepChain(gen, ids, i + 1) }
+            }
+        }, chainToken, SystemClock.uptimeMillis() + wait)
+    }
+
+    private fun tapButton(id: Int, next: () -> Unit) {
+        var done = false
+        fun finish() {
+            if (!done) {
+                done = true
+                next()
+            }
+        }
+
+        val v = btnViews[id]
+        if (mode != Mode.RUN || v == null || !v.isAttachedToWindow) {
+            finish()
+            return
+        }
         val loc = IntArray(2)
         v.getLocationOnScreen(loc)
-        val cx = loc[0] + v.width / 2f
-        val cy = loc[1] + v.height / 2f
         val path = Path()
-        path.moveTo(cx, cy)
-        val stroke = GestureDescription.StrokeDescription(path, 0L, 20L)
+        path.moveTo(loc[0] + v.width / 2f, loc[1] + v.height / 2f)
+        val stroke = GestureDescription.StrokeDescription(path, 0L, 10L)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
-        try {
-            dispatchGesture(gesture, null, null)
+        val cb = object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                finish()
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                finish()
+            }
+        }
+        val ok = try {
+            dispatchGesture(gesture, cb, handler)
         } catch (_: Exception) {
+            false
         }
         v.flashFx()
+        if (!ok) {
+            finish()
+        } else {
+            // đề phòng hệ thống không gọi callback: tự đi tiếp sau 400ms để chuỗi không bị kẹt
+            handler.postAtTime({ finish() }, chainToken, SystemClock.uptimeMillis() + 400)
+        }
     }
 }
