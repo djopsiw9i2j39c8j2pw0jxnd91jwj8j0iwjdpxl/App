@@ -6,22 +6,27 @@ import org.json.JSONObject
 
 enum class Kind { NUM, MAIN }
 
+/** Kiểu kích hoạt của nút main. */
+const val TRIG_PRESS = 0    // chạy 1 lần khi ấn xuống
+const val TRIG_RELEASE = 1  // chạy 1 lần khi thả tay
+const val TRIG_HOLD = 2     // giữ tay: chuỗi lặp đi lặp lại, thả tay là dừng
+
 /**
  * Một nút trên màn hình.
- * - NUM : nút macro số 1, 2, 3...  (là vị trí sẽ được "bấm")
+ * - NUM : nút macro số 1, 2, 3...  (là vị trí sẽ được "bấm"; số được đánh RIÊNG trong từng main)
  * - MAIN: nút trung tâm main1, main2... (nút bạn bấm để kích hoạt chuỗi)
  */
 data class MacroButton(
     val id: Int,
     var kind: Kind,
-    var number: Int,
+    var number: Int,       // NUM: thứ tự trong main của nó · MAIN: số của main
     var x: Int,            // tâm nút (px, toạ độ màn hình)
     var y: Int,
     var sizeDp: Int,
-    var alphaPct: Int,     // 20..100
+    var alphaPct: Int,     // 0..100 (0 = tàng hình khi chạy; lúc setup luôn hiện tối thiểu 20%)
     var delayMs: Int,      // chỉ NUM: độ trễ trước khi bấm (tốc độ ấn)
-    var mainNo: Int,       // chỉ NUM: thuộc main số mấy (0 = không liên kết)
-    var onRelease: Boolean // chỉ MAIN: false = kích hoạt khi ấn, true = khi thả tay
+    var mainNo: Int,       // chỉ NUM: thuộc main số mấy (0 = chưa nối main nào)
+    var trigger: Int       // chỉ MAIN: TRIG_PRESS / TRIG_RELEASE / TRIG_HOLD
 )
 
 object Store {
@@ -56,7 +61,7 @@ object Store {
             o.put("alpha", b.alphaPct)
             o.put("delay", b.delayMs)
             o.put("main", b.mainNo)
-            o.put("onRelease", b.onRelease)
+            o.put("trigger", b.trigger)
             arr.put(o)
         }
         return arr
@@ -75,10 +80,11 @@ object Store {
                     x = o.optInt("x", 300),
                     y = o.optInt("y", 300),
                     sizeDp = o.optInt("size", if (kind == Kind.MAIN) 72 else 56),
-                    alphaPct = o.optInt("alpha", 85),
+                    alphaPct = o.optInt("alpha", 85).coerceIn(0, 100),
                     delayMs = o.optInt("delay", 120),
                     mainNo = o.optInt("main", 0),
-                    onRelease = o.optBoolean("onRelease", false)
+                    // tương thích dữ liệu cũ (chỉ có onRelease true/false)
+                    trigger = o.optInt("trigger", if (o.optBoolean("onRelease", false)) TRIG_RELEASE else TRIG_PRESS)
                 )
             )
         }

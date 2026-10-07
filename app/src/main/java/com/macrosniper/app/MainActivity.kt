@@ -30,6 +30,7 @@ class MainActivity : Activity() {
     private lateinit var statusDot: View
     private lateinit var statusText: TextView
     private lateinit var statusSub: TextView
+    private lateinit var toggleBtn: TextView
 
     private fun dp(v: Number): Int = (v.toFloat() * resources.displayMetrics.density + 0.5f).toInt()
 
@@ -129,34 +130,16 @@ class MainActivity : Activity() {
         stlp.topMargin = dp(30)
         col.addView(status, stlp)
 
-        // nút bắt đầu
-        val start = text("▶   BẮT ĐẦU DÙNG MACRO", 16f, Color.parseColor("#0B120A"), true)
-        start.gravity = Gravity.CENTER
-        start.letterSpacing = 0.05f
-        val sg = GradientDrawable(
-            GradientDrawable.Orientation.LEFT_RIGHT,
-            intArrayOf(Color.parseColor("#B6FF5E"), Color.parseColor("#3FD91C"))
-        )
-        sg.cornerRadius = dp(20).toFloat()
-        start.background = sg
-        start.elevation = dp(6).toFloat()
-        start.isClickable = true
-        pressFx(start)
-        start.setOnClickListener { onStartClicked() }
-        val stl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(62))
-        stl.topMargin = dp(16)
-        col.addView(start, stl)
-
-        // nút tắt
-        val stop = text("■   TẮT MACRO & GỠ GIAO DIỆN NỔI", 14f, Theme.ACCENT, true)
-        stop.gravity = Gravity.CENTER
-        stop.background = roundedBg(Color.parseColor("#101810"), dp(20).toFloat(), Theme.STROKE, dp(1))
-        stop.isClickable = true
-        pressFx(stop)
-        stop.setOnClickListener { onStopClicked() }
-        val spl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54))
-        spl.topMargin = dp(12)
-        col.addView(stop, spl)
+        // nút bật/tắt (chỉ 1 nút duy nhất, đổi chữ + màu theo trạng thái)
+        toggleBtn = text("", 16f, Color.parseColor("#0B120A"), true)
+        toggleBtn.gravity = Gravity.CENTER
+        toggleBtn.letterSpacing = 0.05f
+        toggleBtn.isClickable = true
+        pressFx(toggleBtn)
+        toggleBtn.setOnClickListener { onToggleClicked() }
+        val tgl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(62))
+        tgl.topMargin = dp(16)
+        col.addView(toggleBtn, tgl)
 
         // hướng dẫn
         val guide = LinearLayout(this)
@@ -167,10 +150,11 @@ class MainActivity : Activity() {
         val steps = listOf(
             "1.  Bật dịch vụ \"Macro Sniper\" trong Cài đặt → Trợ năng.",
             "2.  Quay lại đây, bấm BẮT ĐẦU. Bong bóng logo sẽ nổi trên màn hình (kéo thả được).",
-            "3.  Chạm bong bóng để mở bảng setup: thêm nút số 1, 2, 3... và nút trung tâm main1.",
-            "4.  Kéo các nút đến đúng vị trí cần bấm, chạm vào nút để chỉnh size / độ trong / tốc độ.",
-            "5.  Bấm ✕ để khóa nút. Mở game rồi bấm main1 → máy tự chạm 1 → 2 → 3... đúng tốc độ.",
-            "6.  Muốn gỡ toàn bộ giao diện nổi: mở lại app này và bấm TẮT."
+            "3.  Chạm bong bóng để mở bảng setup: tạo nút trung tâm main1, rồi chọn main đó để thêm nút số 1, 2, 3... (mỗi main có số riêng: main2 → 1, 2...).",
+            "4.  Kéo các nút đến đúng vị trí cần bấm, chạm vào nút để chỉnh size / độ trong (kéo về 0 là tàng hình) / tốc độ. Lúc setup nút luôn hiện tối thiểu 20%.",
+            "5.  Nút main có 3 kiểu kích hoạt: khi ấn, khi thả, hoặc giữ tay để chuỗi tự lặp lại.",
+            "6.  Bấm ✕ để khóa nút. Mở game rồi bấm main1 → máy tự chạm 1 → 2 → 3... đúng tốc độ.",
+            "7.  Muốn gỡ toàn bộ giao diện nổi: mở lại app này và bấm nút TẮT (cũng là nút bật ở trên)."
         )
         for (s in steps) {
             val t = text(s, 13f, Theme.TEXT)
@@ -214,9 +198,35 @@ class MainActivity : Activity() {
     private fun AccessibilityServiceInfo.resourceInfo(): String? =
         this.resolveInfo?.serviceInfo?.packageName
 
+    private fun isRunning(): Boolean =
+        serviceEnabled() && Store.isRunning(this) && MacroService.instance != null
+
+    /** Đổi giao diện nút bật/tắt theo trạng thái. */
+    private fun applyToggle(running: Boolean) {
+        if (running) {
+            toggleBtn.text = "■   TẮT MACRO & GỠ GIAO DIỆN NỔI"
+            toggleBtn.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f)
+            toggleBtn.setTextColor(Theme.DANGER)
+            toggleBtn.background = roundedBg(Color.parseColor("#181010"), dp(20).toFloat(), Theme.DANGER, dp(1))
+            toggleBtn.elevation = 0f
+        } else {
+            toggleBtn.text = "▶   BẮT ĐẦU DÙNG MACRO"
+            toggleBtn.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 16f)
+            toggleBtn.setTextColor(Color.parseColor("#0B120A"))
+            val sg = GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(Color.parseColor("#B6FF5E"), Color.parseColor("#3FD91C"))
+            )
+            sg.cornerRadius = dp(20).toFloat()
+            toggleBtn.background = sg
+            toggleBtn.elevation = dp(6).toFloat()
+        }
+    }
+
     private fun refreshStatus() {
         val enabled = serviceEnabled()
-        val running = enabled && Store.isRunning(this) && MacroService.instance != null
+        val running = isRunning()
+        applyToggle(running)
         val dotBg = statusDot.background as GradientDrawable
         when {
             running -> {
@@ -235,6 +245,10 @@ class MainActivity : Activity() {
                 statusSub.text = "Cần bật để app hiển thị nút nổi và tự chạm màn hình"
             }
         }
+    }
+
+    private fun onToggleClicked() {
+        if (isRunning()) onStopClicked() else onStartClicked()
     }
 
     private fun onStartClicked() {

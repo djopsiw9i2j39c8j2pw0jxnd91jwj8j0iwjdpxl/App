@@ -70,6 +70,7 @@ class MacroService : AccessibilityService() {
     private var panelY = -1
     private var nameDraft = ""
     private var listOpen = false
+    private var addTargetMain = 0 // main đang được chọn để thêm nút số vào
     private var logoBmp: Bitmap? = null
 
     // ---------------------------------------------------------------- vòng đời
@@ -138,6 +139,7 @@ class MacroService : AccessibilityService() {
             logoBmp = BitmapFactory.decodeResource(resources, R.drawable.logo_bubble)
         }
         buttons = Store.loadCurrent(this)
+        normalize()
         selectedId = -1
         listOpen = false
         mode = Mode.RUN
@@ -235,6 +237,43 @@ class MacroService : AccessibilityService() {
         Store.saveCurrent(this, buttons)
     }
 
+    /** Độ trong hiển thị: khi chạy theo đúng cài đặt (có thể 0); lúc setup luôn hiện tối thiểu 20%. */
+    private fun viewAlpha(b: MacroButton): Float =
+        (if (mode == Mode.EDIT) maxOf(b.alphaPct, 20) else b.alphaPct) / 100f
+
+    /** Đánh lại số 1,2,3... RIÊNG cho từng main. */
+    private fun renumber(mainNo: Int) {
+        buttons.filter { it.kind == Kind.NUM && it.mainNo == mainNo }
+            .sortedWith(compareBy({ it.number }, { it.id }))
+            .forEachIndexed { i, x -> x.number = i + 1 }
+    }
+
+    private fun normalize() {
+        for (m in buttons.filter { it.kind == Kind.NUM }.map { it.mainNo }.distinct()) renumber(m)
+    }
+
+    private fun mainNumbers(): List<Int> =
+        buttons.filter { it.kind == Kind.MAIN }.map { it.number }.sorted()
+
+    private fun targetMain(): Int {
+        val mains = mainNumbers()
+        return if (addTargetMain in mains) addTargetMain else (mains.firstOrNull() ?: 0)
+    }
+
+    /** Chuyển nút số sang main khác; nó thành số cuối của main mới, main cũ được đánh số lại. */
+    private fun relink(b: MacroButton, newMain: Int) {
+        val old = b.mainNo
+        if (old == newMain) return
+        b.mainNo = newMain
+        b.number = (buttons.filter { it.kind == Kind.NUM && it.mainNo == newMain && it !== b }
+            .maxOfOrNull { it.number } ?: 0) + 1
+        renumber(old)
+        if (newMain > 0) addTargetMain = newMain
+        persist()
+        for (v in btnViews.values) v.invalidate()
+        backdrop?.invalidate()
+    }
+
     private fun toast(s: String) {
         Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
     }
@@ -282,7 +321,8 @@ class MacroService : AccessibilityService() {
         lp.y = b.y - size / 2
 
         val v = BtnView(this, b)
-        v.alpha = b.alphaPct / 100f
+        v.alpha = viewAlpha(b)
+        v.showTag = editing
         v.hilite = editing && b.id == selectedId
 
         if (editing) {
@@ -310,14 +350,21 @@ class MacroService : AccessibilityService() {
                 when (e.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         bv.pressedFx = true
-                        if (!b.onRelease) runChain(b.number)
+                        when (b.trigger) {
+                            TRIG_PRESS -> runChain(b.number)
+                            TRIG_HOLD -> runChain(b.number, true)
+                        }
                     }
                     MotionEvent.ACTION_UP -> {
                         bv.pressedFx = false
-                        if (b.onRelease) runChain(b.number)
+                        when (b.trigger) {
+                            TRIG_RELEASE -> runChain(b.number)
+                            TRIG_HOLD -> cancelChain() // thả tay -> dừng lặp
+                        }
                     }
                     MotionEvent.ACTION_CANCEL -> {
                         bv.pressedFx = false
+                        if (b.trigger == TRIG_HOLD) cancelChain()
                     }
                 }
                 true
@@ -561,7 +608,7 @@ class MacroService : AccessibilityService() {
             panelTitle?.text = "MACRO SNIPER  ·  SETUP"
             buildAddContent(content)
         } else {
-            panelTitle?.text = if (b.kind == Kind.MAIN) "Chỉnh main${b.number}" else "Chỉnh nút ${b.number}"
+            panelTitle?.text = if (b.kind == Kind.MAIN) "Chỉnh main${b.number}" else if (b.mainNo > 0) "Chỉnh nút ${b.number}  ·  main${b.mainNo}" else "Chỉnh nút ${b.number}"
             buildEditContent(content, b)
         }
     }
@@ -577,6 +624,26 @@ class MacroService : AccessibilityService() {
         r1.addView(actionBtn("+  Nút macro", true) { addNum() }, weighted(rowH, 0, dp(4)))
         r1.addView(actionBtn("◎  Nút trung tâm", false) { addMain() }, weighted(rowH, dp(4), 0))
         c.addView(r1)
+
+        // chọn main để nối nút số vào (mỗi main có số 1, 2, 3... riêng)
+        val mains = mainNumbers()
+        val tm = targetMain()
+        val r1b = LinearLayout(this)
+        r1b.orientation = LinearLayout.HORIZONTAL
+        r1b.gravity = Gravity.CENTER_VERTICAL
+        r1b.addView(label("Nút số thuộc", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
+        r1b.addView(
+            actionBtn(if (tm == 0) "Chưa có main — tạo nút trung tâm" else "main$tm   ⟳", false) {
+                if (mains.size > 1) {
+                    addTargetMain = mains[(mains.indexOf(tm) + 1) % mains.size]
+                    refreshPanel()
+                }
+            },
+            LinearLayout.LayoutParams(0, dp(36), 1f)
+        )
+        val r1blp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        r1blp.topMargin = dp(8)
+        c.addView(r1b, r1blp)
 
         // tên macro + lưu
         val r2 = LinearLayout(this)
@@ -657,6 +724,7 @@ class MacroService : AccessibilityService() {
                     val loaded = Store.loadMacro(this, n)
                     if (loaded != null) {
                         buttons = loaded
+                        normalize()
                         nameDraft = n
                         selectedId = -1
                         listOpen = false
@@ -684,7 +752,7 @@ class MacroService : AccessibilityService() {
         c.addView(r4, r4lp)
 
         val hint = label(
-            "Kéo nút để đặt vị trí  ·  Chạm vào nút để chỉnh size / độ trong / tốc độ  ·  Bấm ✕ để chạy macro",
+            "Kéo nút để đặt vị trí  ·  Chạm vào nút để chỉnh  ·  Nút số được đánh số riêng theo từng main  ·  Lúc setup nút luôn hiện tối thiểu 20%  ·  Bấm ✕ để chạy macro",
             11f, Theme.MUTED
         )
         hint.setPadding(dp(2), dp(8), dp(2), 0)
@@ -739,9 +807,9 @@ class MacroService : AccessibilityService() {
             applySize(b)
             if (done) persist()
         })
-        c.addView(sliderRow("Độ trong", 20, 100, b.alphaPct, { "$it%" }) { v, done ->
+        c.addView(sliderRow("Độ trong", 0, 100, b.alphaPct, { "$it%" }) { v, done ->
             b.alphaPct = v
-            btnViews[b.id]?.alpha = v / 100f
+            btnViews[b.id]?.alpha = viewAlpha(b) // lúc setup vẫn hiện tối thiểu 20%
             if (done) persist()
         })
 
@@ -751,20 +819,21 @@ class MacroService : AccessibilityService() {
                 if (done) persist()
             })
 
-            // liên kết với main nào
+            // thuộc main nào (số thứ tự được đánh riêng trong từng main)
             val row = LinearLayout(this)
             row.orientation = LinearLayout.HORIZONTAL
             row.gravity = Gravity.CENTER_VERTICAL
-            row.addView(label("Liên kết", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
-            val options = listOf(0) + buttons.filter { it.kind == Kind.MAIN }.map { it.number }.sorted()
+            row.addView(label("Thuộc main", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
+            val mains = mainNumbers()
+            val options = if (b.mainNo == 0) listOf(0) + mains else mains
             val cur = options.indexOf(b.mainNo).coerceAtLeast(0)
-            val txt = if (b.mainNo == 0) "Không liên kết" else "main${b.mainNo}  →  ${b.number}"
+            val txt = if (b.mainNo == 0) "Chưa nối main" else "main${b.mainNo}  →  ${b.number}"
             row.addView(
                 actionBtn("$txt   ⟳", false) {
-                    b.mainNo = options[(cur + 1) % options.size]
-                    persist()
-                    refreshPanel()
-                    backdrop?.invalidate()
+                    if (options.size > 1) {
+                        relink(b, options[(cur + 1) % options.size])
+                        refreshPanel()
+                    }
                 },
                 LinearLayout.LayoutParams(0, dp(36), 1f)
             )
@@ -776,25 +845,25 @@ class MacroService : AccessibilityService() {
             row.orientation = LinearLayout.HORIZONTAL
             row.gravity = Gravity.CENTER_VERTICAL
             row.addView(label("Kích hoạt", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
-            row.addView(
-                actionBtn("Khi ấn xuống", !b.onRelease) {
-                    b.onRelease = false
-                    persist()
-                    refreshPanel()
-                },
-                weighted(dp(36), 0, dp(4))
-            )
-            row.addView(
-                actionBtn("Khi thả tay", b.onRelease) {
-                    b.onRelease = true
-                    persist()
-                    refreshPanel()
-                },
-                weighted(dp(36), dp(4), 0)
-            )
+            val opts = listOf(TRIG_PRESS to "Khi ấn", TRIG_RELEASE to "Khi thả", TRIG_HOLD to "Giữ lặp")
+            for ((i, o) in opts.withIndex()) {
+                row.addView(
+                    actionBtn(o.second, b.trigger == o.first) {
+                        b.trigger = o.first
+                        persist()
+                        refreshPanel()
+                    },
+                    weighted(dp(36), if (i == 0) 0 else dp(2), if (i == opts.size - 1) 0 else dp(2))
+                )
+            }
             val rl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             rl.topMargin = dp(4)
             c.addView(row, rl)
+            if (b.trigger == TRIG_HOLD) {
+                val note = label("Giữ ngón tay trên nút main: chuỗi cứ lặp đi lặp lại, thả tay là dừng.", 11f, Theme.MUTED)
+                note.setPadding(dp(2), dp(6), dp(2), 0)
+                c.addView(note)
+            }
         }
 
         val bottom = LinearLayout(this)
@@ -827,6 +896,10 @@ class MacroService : AccessibilityService() {
         setPanelFocusable(false)
         selectedId = id
         listOpen = false
+        buttons.firstOrNull { it.id == id }?.let {
+            val m = if (it.kind == Kind.MAIN) it.number else it.mainNo
+            if (m > 0) addTargetMain = m
+        }
         for ((bid, v) in btnViews) v.hilite = (bid == id)
         refreshPanel()
     }
@@ -840,21 +913,24 @@ class MacroService : AccessibilityService() {
     private fun nextId(): Int = (buttons.maxOfOrNull { it.id } ?: 0) + 1
 
     private fun addNum() {
+        val mainNo = targetMain()
+        if (mainNo == 0) {
+            toast("Hãy tạo nút trung tâm (main) trước, rồi chọn main để nối nút số vào")
+            return
+        }
         val (sw, sh) = screenSize()
-        val n = buttons.count { it.kind == Kind.NUM } + 1
-        val prev = buttons.filter { it.kind == Kind.NUM }.maxByOrNull { it.number }
-        val mains = buttons.filter { it.kind == Kind.MAIN }.map { it.number }.sorted()
-        val link = prev?.mainNo ?: (mains.firstOrNull() ?: 0)
-        val idx = n - 1
+        val n = buttons.count { it.kind == Kind.NUM && it.mainNo == mainNo } + 1
+        val idx = buttons.count { it.kind == Kind.NUM } // chỉ để xếp vị trí cho khỏi chồng nhau
         buttons.add(
             MacroButton(
                 id = nextId(), kind = Kind.NUM, number = n,
                 x = sw / 2 + ((idx % 7) - 3) * dp(38),
                 y = sh / 2 + (idx / 7) * dp(46) - dp(20),
                 sizeDp = 56, alphaPct = 85, delayMs = 120,
-                mainNo = link, onRelease = false
+                mainNo = mainNo, trigger = TRIG_PRESS
             )
         )
+        addTargetMain = mainNo
         persist()
         rebuildAll()
     }
@@ -862,19 +938,16 @@ class MacroService : AccessibilityService() {
     private fun addMain() {
         val (sw, sh) = screenSize()
         val n = (buttons.filter { it.kind == Kind.MAIN }.maxOfOrNull { it.number } ?: 0) + 1
-        val first = buttons.none { it.kind == Kind.MAIN }
         buttons.add(
             MacroButton(
                 id = nextId(), kind = Kind.MAIN, number = n,
                 x = sw - dp(110), y = sh / 2 + (n - 1) * dp(80),
                 sizeDp = 72, alphaPct = 90, delayMs = 0,
-                mainNo = 0, onRelease = false
+                mainNo = 0, trigger = TRIG_PRESS
             )
         )
-        if (first) {
-            // main đầu tiên: tự nối với tất cả nút số chưa liên kết
-            for (b in buttons) if (b.kind == Kind.NUM && b.mainNo == 0) b.mainNo = n
-        }
+        // không tự nối nút số nào vào main mới; các nút số tạo sau sẽ vào main này
+        addTargetMain = n
         persist()
         rebuildAll()
     }
@@ -882,12 +955,11 @@ class MacroService : AccessibilityService() {
     private fun deleteButton(b: MacroButton) {
         buttons.remove(b)
         if (b.kind == Kind.MAIN) {
+            // các nút số của main này thành "chưa nối main" (có thể nối lại bằng mục "Thuộc main")
             for (x in buttons) if (x.kind == Kind.NUM && x.mainNo == b.number) x.mainNo = 0
+            normalize()
         } else {
-            var i = 1
-            for (x in buttons.filter { it.kind == Kind.NUM }.sortedBy { it.number }) {
-                x.number = i++
-            }
+            renumber(b.mainNo)
         }
         selectedId = -1
         persist()
@@ -956,25 +1028,29 @@ class MacroService : AccessibilityService() {
 
     private var chainGen = 0
     private var chainRunning = false
+    private var holdMain = -1 // main đang được giữ tay (chế độ lặp); -1 = không lặp
 
     private fun cancelChain() {
         chainGen++
         chainRunning = false
+        holdMain = -1
         handler.removeCallbacksAndMessages(chainToken)
     }
 
     /**
-     * main số [mainNo] được kích hoạt -> lần lượt bấm vào các nút 1, 2, 3... đã liên kết.
+     * main số [mainNo] được kích hoạt -> lần lượt bấm vào các nút 1, 2, 3... của CHÍNH main đó.
+     * [repeat] = true (kiểu "giữ"): chạy xong chuỗi thì tự chạy lại cho tới khi cancelChain() (thả tay).
      * Các cú chạm đi TUẦN TỰ: cú sau chỉ được gửi khi cú trước đã xong (tránh nghẽn hàng đợi
      * cử chỉ làm đơ màn hình / không xoay được camera).
      */
-    private fun runChain(mainNo: Int) {
+    private fun runChain(mainNo: Int, repeat: Boolean = false) {
         if (chainRunning) return // đang chạy dở thì bỏ qua lần bấm dồn
         val ids = buttons
             .filter { it.kind == Kind.NUM && it.mainNo == mainNo }
             .sortedBy { it.number }
             .map { it.id }
         if (ids.isEmpty()) return
+        holdMain = if (repeat) mainNo else -1
         chainGen++
         chainRunning = true
         stepChain(chainGen, ids, 0)
@@ -984,6 +1060,13 @@ class MacroService : AccessibilityService() {
         if (gen != chainGen) return
         if (i >= ids.size || mode != Mode.RUN) {
             chainRunning = false
+            val m = holdMain
+            if (m != -1 && mode == Mode.RUN) {
+                // vẫn đang giữ tay -> lặp lại chuỗi
+                handler.postAtTime({
+                    if (gen == chainGen && holdMain == m && mode == Mode.RUN) runChain(m, true)
+                }, chainToken, SystemClock.uptimeMillis() + 20)
+            }
             return
         }
         val b = buttons.firstOrNull { it.id == ids[i] }

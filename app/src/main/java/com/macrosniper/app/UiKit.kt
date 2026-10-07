@@ -50,6 +50,12 @@ class BtnView(ctx: Context, val m: MacroButton) : View(ctx) {
             field = v
             invalidate()
         }
+    /** Chế độ setup: hiện thêm nhãn nhỏ "mN" dưới số để biết nút số thuộc main nào. */
+    var showTag: Boolean = false
+        set(v) {
+            field = v
+            invalidate()
+        }
     private var flashing = false
 
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -110,8 +116,17 @@ class BtnView(ctx: Context, val m: MacroButton) : View(ctx) {
             label.length == 2 -> br * 0.9f
             else -> br * 1.05f
         }
+        val tag = showTag && !isMain && m.mainNo > 0
         val fm = tp.fontMetrics
-        c.drawText(label, cx, cy - (fm.ascent + fm.descent) / 2f, tp)
+        val shiftUp = if (tag) br * 0.12f else 0f
+        c.drawText(label, cx, cy - (fm.ascent + fm.descent) / 2f - shiftUp, tp)
+
+        if (tag) {
+            tp.textSize = br * 0.28f
+            tp.color = Theme.LIME
+            val f2 = tp.fontMetrics
+            c.drawText("m${m.mainNo}", cx, cy + br * 0.62f - (f2.ascent + f2.descent) / 2f, tp)
+        }
     }
 }
 
