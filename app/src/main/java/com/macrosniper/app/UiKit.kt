@@ -107,26 +107,81 @@ class BtnView(ctx: Context, val m: MacroButton) : View(ctx) {
         p.alpha = 255
         c.drawCircle(cx, cy, br - p.strokeWidth / 2f, p)
 
-        // chữ
-        val label = if (isMain) "main${m.number}" else m.number.toString()
-        tp.color = col
-        tp.textSize = when {
+        // chữ: tên tuỳ chỉnh (nếu có) hoặc số / mainN. Chữ luôn tự co / xuống dòng / cắt bớt cho nằm gọn trong nút.
+        val custom = m.name.trim()
+        val label = when {
+            custom.isNotEmpty() -> custom
+            isMain -> "main${m.number}"
+            else -> m.number.toString()
+        }
+        val base = when {
+            custom.isNotEmpty() -> if (isMain) br * 0.5f else br * 0.62f
             isMain -> br * 0.5f
             label.length >= 3 -> br * 0.7f
             label.length == 2 -> br * 0.9f
             else -> br * 1.05f
         }
         val tag = showTag && !isMain && m.mainNo > 0
+        val tagText = if (custom.isNotEmpty()) "${m.number}·m${m.mainNo}" else "m${m.mainNo}"
+        tp.color = col
+        val maxW = br * 1.52f
+        val (lines, size) = fitLabel(label, base, maxW, br)
+        tp.textSize = size
         val fm = tp.fontMetrics
+        val lineH = (fm.descent - fm.ascent) * 0.95f
         val shiftUp = if (tag) br * 0.12f else 0f
-        c.drawText(label, cx, cy - (fm.ascent + fm.descent) / 2f - shiftUp, tp)
+        val total = lineH * lines.size
+        var y = cy - total / 2f - fm.ascent - shiftUp
+        for (ln in lines) {
+            c.drawText(ln, cx, y, tp)
+            y += lineH
+        }
 
         if (tag) {
             tp.textSize = br * 0.28f
             tp.color = Theme.LIME
             val f2 = tp.fontMetrics
-            c.drawText("m${m.mainNo}", cx, cy + br * 0.62f - (f2.ascent + f2.descent) / 2f, tp)
+            c.drawText(tagText, cx, cy + br * 0.62f - (f2.ascent + f2.descent) / 2f, tp)
         }
+    }
+
+    /**
+     * Xếp chữ cho vừa bề ngang [maxW]: ưu tiên 1 dòng co nhỏ dần; nếu vẫn dài và có dấu cách thì tách 2 dòng;
+     * cuối cùng cắt bớt và thêm "…". Trả về (các dòng, cỡ chữ).
+     */
+    private fun fitLabel(text: String, base: Float, maxW: Float, br: Float): Pair<List<String>, Float> {
+        val minOne = maxOf(br * 0.26f, 8f)
+        var sz = base
+        tp.textSize = sz
+        val w1 = tp.measureText(text)
+        if (w1 > maxW) sz = maxOf(minOne, base * maxW / w1)
+        tp.textSize = sz
+        if (tp.measureText(text) <= maxW) return Pair(listOf(text), sz)
+
+        // 2 dòng (tách ở dấu cách gần giữa nhất)
+        if (text.contains(' ')) {
+            val mid = text.length / 2
+            var cut = -1
+            for (i in text.indices) {
+                if (text[i] == ' ' && (cut < 0 || Math.abs(i - mid) < Math.abs(cut - mid))) cut = i
+            }
+            val a = text.substring(0, cut).trim()
+            val b = text.substring(cut + 1).trim()
+            if (a.isNotEmpty() && b.isNotEmpty()) {
+                var s2 = minOf(base, br * 0.5f)
+                tp.textSize = s2
+                val wide = maxOf(tp.measureText(a), tp.measureText(b))
+                if (wide > maxW) s2 = maxOf(br * 0.22f, s2 * maxW / wide)
+                tp.textSize = s2
+                if (maxOf(tp.measureText(a), tp.measureText(b)) <= maxW) return Pair(listOf(a, b), s2)
+            }
+        }
+
+        // cắt bớt
+        tp.textSize = minOne
+        var t = text
+        while (t.length > 1 && tp.measureText("$t…") > maxW) t = t.dropLast(1)
+        return Pair(listOf("$t…"), minOne)
     }
 }
 

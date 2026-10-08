@@ -324,19 +324,22 @@ public final class GhostTouch implements Toucher {
             return android.os.SystemClock.uptimeMillis();
         }
 
+        private final android.view.MotionEvent.PointerProperties[] pp = new android.view.MotionEvent.PointerProperties[32];
+        private final android.view.MotionEvent.PointerCoords[] pc = new android.view.MotionEvent.PointerCoords[32];
+
         @Override
-        public void inject(int action, int n, int[] ids, float[] xs, float[] ys, long downTime) throws Exception {
-            android.view.MotionEvent.PointerProperties[] pp = new android.view.MotionEvent.PointerProperties[n];
-            android.view.MotionEvent.PointerCoords[] pc = new android.view.MotionEvent.PointerCoords[n];
+        public synchronized void inject(int action, int n, int[] ids, float[] xs, float[] ys, long downTime) throws Exception {
             for (int i = 0; i < n; i++) {
-                pp[i] = new android.view.MotionEvent.PointerProperties();
+                if (pp[i] == null) {
+                    pp[i] = new android.view.MotionEvent.PointerProperties();
+                    pc[i] = new android.view.MotionEvent.PointerCoords();
+                    pp[i].toolType = android.view.MotionEvent.TOOL_TYPE_FINGER;
+                    pc[i].pressure = 1f;
+                    pc[i].size = 1f;
+                }
                 pp[i].id = ids[i];
-                pp[i].toolType = android.view.MotionEvent.TOOL_TYPE_FINGER;
-                pc[i] = new android.view.MotionEvent.PointerCoords();
                 pc[i].x = xs[i];
                 pc[i].y = ys[i];
-                pc[i].pressure = 1f;
-                pc[i].size = 1f;
             }
             android.view.MotionEvent ev = android.view.MotionEvent.obtain(downTime, now(), action, n, pp, pc,
                     0, 0, 1f, 1f, 0, 0, 0x00001002 /* SOURCE_TOUCHSCREEN */, 0);
@@ -354,14 +357,20 @@ public final class GhostTouch implements Toucher {
     /**
      * Dùng khi máy không cho ghi vào /dev/input (EACCES) nhưng vẫn cho ĐỌC.
      *
-     * Android không cho 2 "thiết bị chạm" cùng lúc: cú chạm bơm vào (input tap...) sẽ HUỶ ngón thật. Nên thay vì
-     * cố giữ ngón thật nguyên vẹn, ta làm ngược lại: khi macro cần chạm mà đang có ngón thật trên màn hình, ta
-     * đọc toạ độ ngón thật từ /dev/input rồi BƠM LẠI chính ngón thật đó cùng với ngón macro thành MỘT luồng đa chạm
-     * nhất quán (một thiết bị duy nhất). Ngón thật vẫn kéo camera/bấm nút bình thường (qua bản sao), ngón macro
-     * là con trỏ thêm. Khi mọi ngón thật nhấc lên thì ta nhả luồng và trả lại cho hệ thống.
+     * Android không cho 2 "thiết bị chạm" cùng lúc: cú chạm bơm vào sẽ HUỶ ngón thật. Nên ta đọc toạ độ ngón thật
+     * từ /dev/input rồi BƠM LẠI chính ngón thật cùng với ngón macro thành MỘT luồng đa chạm nhất quán.
+     *
+     * Hai chế độ:
+     *  - "sớm" (pre = true, mặc định khi bật): luồng bơm bắt đầu NGAY khi ngón thật vừa chạm xuống (lúc đó game mới
+     *    nhận vài ms, chưa kịp kéo camera) -> cú huỷ+chạm lại gần như vô hình, và về sau macro bấm bao nhiêu cũng
+     *    KHÔNG còn bị khựng giữa chừng.
+     *  - "khi cần" (pre = false): chỉ tiếp quản ở cú chạm macro đầu tiên lúc tay đang đặt (có thể khựng 1 nhịp).
+     *
+     * Tối ưu: gộp các khung evdev đã chờ sẵn thành 1 lần bơm (không dồn hàng đợi -> không trễ tích luỹ), id con trỏ
+     * luôn nhỏ nhất có thể (game hay giới hạn ~10 id), mảng bơm dùng lại (ít rác), luồng đọc ưu tiên cao.
      */
     static final class Takeover implements Toucher, Runnable {
-        static final int GHOST_ID = 30;
+        static final int GHOST = -1; // "khoá" của ngón macro (ngón thật dùng khoá = số slot)
         static final int A_DOWN = 0, A_UP = 1, A_MOVE = 2, A_PDOWN = 5, A_PUP = 6;
 
         private final Dev dev;
@@ -372,13 +381,15 @@ public final class GhostTouch implements Toucher {
         private final Object lock = new Object();
 
         private final boolean[] act, hasX, hasY;
-        private final int[] rawX, rawY;
+        private final int[] rawX, rawY, tid;
         private int cur = 0;
+        private boolean dirty = false;
         private int rot = 0, w = 1, h = 1;
+        private boolean pre = false;
 
         private boolean started = false;
         private long downTime = 0;
-        private final int[] ids = new int[32];
+        private final int[] keys = new int[32], pids = new int[32], tids = new int[32];
         private final float[] xs = new float[32], ys = new float[32];
         private int n = 0;
         volatile boolean alive = true;
@@ -389,19 +400,37 @@ public final class GhostTouch implements Toucher {
             this.in = in;
             this.inj = inj;
             this.evSize = is64 ? 24 : 16;
-            this.nSlots = Math.max(2, Math.min(GHOST_ID, dev.slot.max + 1));
+            this.nSlots = Math.max(2, Math.min(31, dev.slot.max + 1));
             act = new boolean[nSlots];
             hasX = new boolean[nSlots];
             hasY = new boolean[nSlots];
             rawX = new int[nSlots];
             rawY = new int[nSlots];
+            tid = new int[nSlots];
+        }
+
+        // ---- cấu hình từ app
+        @Override
+        public void config(boolean early, int rot, int w, int h) {
+            synchronized (lock) {
+                this.pre = early;
+                this.rot = rot;
+                this.w = Math.max(1, w);
+                this.h = Math.max(1, h);
+                dirty = true;
+                flushLocked();
+            }
         }
 
         // ---- đọc /dev/input
         @Override
         public void run() {
             try {
-                byte[] buf = new byte[evSize * 64];
+                android.os.Process.setThreadPriority(-8); // URGENT_DISPLAY: bơm kịp nhịp cảm ứng
+            } catch (Throwable ignored) {
+            }
+            try {
+                byte[] buf = new byte[evSize * 128];
                 while (true) {
                     int len = in.read(buf);
                     if (len <= 0) break;
@@ -413,6 +442,7 @@ public final class GhostTouch implements Toucher {
                         int value = bb.getInt();
                         feed(type, code, value);
                     }
+                    flush(); // gộp mọi khung đã đọc được thành 1 lần bơm (trạng thái mới nhất)
                 }
             } catch (Throwable t) {
                 lastError = String.valueOf(t);
@@ -420,15 +450,23 @@ public final class GhostTouch implements Toucher {
             alive = false;
         }
 
-        /** Nạp 1 sự kiện evdev (public cho test). */
+        void flush() {
+            synchronized (lock) {
+                if (dirty) flushLocked();
+            }
+        }
+
+        /** Nạp 1 sự kiện evdev; SYN_REPORT chỉ đánh dấu "có thay đổi" — việc bơm làm ở flush(). */
         void feed(int type, int code, int value) {
             synchronized (lock) {
                 if (type == EV_ABS) {
                     if (code == ABS_MT_SLOT) {
-                        if (value >= 0 && value < nSlots) cur = value; else cur = -1;
+                        cur = (value >= 0 && value < nSlots) ? value : -1;
                     } else if (cur >= 0) {
                         if (code == ABS_MT_TRACKING_ID) {
+                            if (dirty) flushLocked(); // chốt trạng thái cũ trước khi ngón này đổi (nhấc / chạm lại)
                             act[cur] = value != -1;
+                            tid[cur] = value;
                             if (value == -1) {
                                 hasX[cur] = false;
                                 hasY[cur] = false;
@@ -442,14 +480,24 @@ public final class GhostTouch implements Toucher {
                         }
                     }
                 } else if (type == EV_SYN && code == SYN_REPORT) {
-                    if (started) {
-                        try {
-                            syncLocked();
-                        } catch (Throwable t) {
-                            lastError = String.valueOf(t);
-                        }
-                    }
+                    dirty = true;
                 }
+            }
+        }
+
+        private void flushLocked() {
+            dirty = false;
+            try {
+                if (!started) {
+                    if (pre && w > 1 && h > 1 && anyReal()) {
+                        started = true;
+                        addAllReal();
+                    }
+                } else {
+                    syncLocked();
+                }
+            } catch (Throwable t) {
+                lastError = String.valueOf(t);
             }
         }
 
@@ -458,12 +506,9 @@ public final class GhostTouch implements Toucher {
             return act[s] && hasX[s] && hasY[s];
         }
 
-        private float sx(int s) {
-            return screen(s, true);
-        }
-
-        private float sy(int s) {
-            return screen(s, false);
+        private boolean anyReal() {
+            for (int s = 0; s < nSlots; s++) if (real(s)) return true;
+            return false;
         }
 
         private float screen(int s, boolean wantX) {
@@ -480,17 +525,29 @@ public final class GhostTouch implements Toucher {
         }
 
         // ---- luồng bơm
-        private int indexOf(int id) {
-            for (int i = 0; i < n; i++) if (ids[i] == id) return i;
+        private int indexOfKey(int key) {
+            for (int i = 0; i < n; i++) if (keys[i] == key) return i;
             return -1;
         }
 
-        private void emit(int action) throws Exception {
-            inj.inject(action, n, ids, xs, ys, downTime);
+        private int allocPid() {
+            for (int id = 0; id < 32; id++) {
+                boolean used = false;
+                for (int i = 0; i < n; i++) if (pids[i] == id) { used = true; break; }
+                if (!used) return id;
+            }
+            return 31;
         }
 
-        private void addPointer(int id, float x, float y) throws Exception {
-            ids[n] = id;
+        private void emit(int action) throws Exception {
+            inj.inject(action, n, pids, xs, ys, downTime);
+        }
+
+        private void addPointer(int key, float x, float y) throws Exception {
+            if (n >= 31) return;
+            keys[n] = key;
+            pids[n] = allocPid();
+            tids[n] = key >= 0 ? tid[key] : 0;
             xs[n] = x;
             ys[n] = y;
             n++;
@@ -502,32 +559,36 @@ public final class GhostTouch implements Toucher {
             }
         }
 
-        private void removePointer(int id) throws Exception {
-            int idx = indexOf(id);
-            if (idx < 0) return;
+        private void removeAt(int idx) throws Exception {
             if (n == 1) emit(A_UP); else emit(A_PUP | (idx << 8));
             for (int i = idx; i < n - 1; i++) {
-                ids[i] = ids[i + 1];
+                keys[i] = keys[i + 1];
+                pids[i] = pids[i + 1];
+                tids[i] = tids[i + 1];
                 xs[i] = xs[i + 1];
                 ys[i] = ys[i + 1];
             }
             n--;
         }
 
-        /** Đồng bộ luồng bơm theo trạng thái ngón thật hiện tại (gọi khi đang giữ [lock] và đã started). */
+        private void addAllReal() throws Exception {
+            for (int s = 0; s < nSlots; s++) {
+                if (real(s) && indexOfKey(s) < 0) addPointer(s, screen(s, true), screen(s, false));
+            }
+        }
+
+        /** Đồng bộ luồng bơm theo trạng thái ngón thật hiện tại (đang giữ [lock] và đã started). */
         private void syncLocked() throws Exception {
             for (int i = n - 1; i >= 0; i--) {
-                int id = ids[i];
-                if (id != GHOST_ID && !real(id)) removePointer(id);
+                int k = keys[i];
+                if (k != GHOST && (!real(k) || tids[i] != tid[k])) removeAt(i);
             }
-            for (int s = 0; s < nSlots; s++) {
-                if (real(s) && indexOf(s) < 0) addPointer(s, sx(s), sy(s));
-            }
+            addAllReal();
             boolean moved = false;
             for (int i = 0; i < n; i++) {
-                int id = ids[i];
-                if (id == GHOST_ID) continue;
-                float x = sx(id), y = sy(id);
+                int k = keys[i];
+                if (k == GHOST) continue;
+                float x = screen(k, true), y = screen(k, false);
                 if (Math.abs(x - xs[i]) >= 0.5f || Math.abs(y - ys[i]) >= 0.5f) {
                     xs[i] = x;
                     ys[i] = y;
@@ -538,15 +599,6 @@ public final class GhostTouch implements Toucher {
             if (n == 0) started = false;
         }
 
-        /** Số ngón thật đang đặt (public cho test). */
-        int realCount() {
-            synchronized (lock) {
-                int c = 0;
-                for (int s = 0; s < nSlots; s++) if (real(s)) c++;
-                return c;
-            }
-        }
-
         @Override
         public void tap(int x, int y, int rot, int w, int h, int holdMs) throws Exception {
             synchronized (lock) {
@@ -555,17 +607,18 @@ public final class GhostTouch implements Toucher {
                 this.h = Math.max(1, h);
                 if (!started) {
                     started = true;
-                    // đang có ngón thật -> chép toàn bộ vào luồng bơm (ngón thật bị Android huỷ 1 lần rồi được ta nuôi tiếp)
-                    for (int s = 0; s < nSlots; s++) if (real(s)) addPointer(s, sx(s), sy(s));
+                    addAllReal(); // đang có ngón thật -> chép vào luồng bơm (chế độ "khi cần")
                 }
-                if (indexOf(GHOST_ID) >= 0) removePointer(GHOST_ID);
-                addPointer(GHOST_ID, x, y);
+                int gi = indexOfKey(GHOST);
+                if (gi >= 0) removeAt(gi);
+                addPointer(GHOST, x, y);
             }
             try {
                 Thread.sleep(Math.max(8, holdMs));
             } finally {
                 synchronized (lock) {
-                    if (indexOf(GHOST_ID) >= 0) removePointer(GHOST_ID);
+                    int gi = indexOfKey(GHOST);
+                    if (gi >= 0) removeAt(gi);
                     if (n == 0) started = false;
                     else syncLocked();
                 }
@@ -606,6 +659,11 @@ public final class GhostTouch implements Toucher {
     }
 
     /** Chạm 1 cái: ngón phụ xuống -> giữ [holdMs] -> nhấc. Ngón thật (nếu có) không bị đụng tới. */
+    @Override
+    public void config(boolean early, int rot, int w, int h) {
+        // chế độ ghi thẳng /dev/input không cần cấu hình
+    }
+
     @Override
     public void tap(int x, int y, int rot, int w, int h, int holdMs) throws Exception {
         int[] raw = mapToRaw(dev, x, y, rot, w, h);
@@ -691,6 +749,10 @@ public final class GhostTouch implements Toucher {
             return;
         }
 
+        try {
+            android.os.Process.setThreadPriority(-8);
+        } catch (Throwable ignored) {
+        }
         try (BufferedReader in = new BufferedReader(new InputStreamReader(System.in))) {
             String line;
             while ((line = in.readLine()) != null) {
@@ -698,7 +760,12 @@ public final class GhostTouch implements Toucher {
                 if (line.isEmpty()) continue;
                 if (line.equals("Q")) break;
                 String[] p = line.split("\\s+");
-                if (p[0].equals("T") && p.length >= 8) {
+                if (p[0].equals("P") && p.length >= 5) {
+                    try {
+                        g.config(p[1].equals("1"), Integer.parseInt(p[2]), Integer.parseInt(p[3]), Integer.parseInt(p[4]));
+                    } catch (Throwable ignored) {
+                    }
+                } else if (p[0].equals("T") && p.length >= 8) {
                     String id = p[1];
                     try {
                         g.tap(Integer.parseInt(p[2]), Integer.parseInt(p[3]), Integer.parseInt(p[4]),
@@ -718,4 +785,7 @@ public final class GhostTouch implements Toucher {
 /** Một "bộ chạm": ghi thẳng /dev/input (GhostTouch) hoặc tiếp quản ngón thật (GhostTouch.Takeover). */
 interface Toucher {
     void tap(int x, int y, int rot, int w, int h, int holdMs) throws Exception;
+
+    /** Cấu hình từ app: [early] = tiếp quản sớm; [rot]/[w]/[h] = hướng + kích thước màn hình hiện tại. */
+    void config(boolean early, int rot, int w, int h);
 }

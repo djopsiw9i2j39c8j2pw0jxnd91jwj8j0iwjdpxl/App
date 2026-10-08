@@ -307,8 +307,16 @@ class MacroService : AccessibilityService() {
 
     // ---------------------------------------------------------------- dựng giao diện
 
+    /** Báo GhostTouch bật "tiếp quản sớm" khi đang chạy macro bằng Gỡ lỗi WiFi (kèm hướng + cỡ màn hình). */
+    private fun syncArm() {
+        val on = mode == Mode.RUN && Store.tapMode(this) == TAP_ADB && Store.earlyTake(this)
+        val (sw, sh) = screenSize()
+        AdbClient.arm(on, displayRotation(), sw, sh)
+    }
+
     private fun rebuildAll() {
         removeAll()
+        syncArm()
         if (mode == Mode.OFF) return
         val (sw, sh) = screenSize()
         if (mode == Mode.EDIT) addBackdrop()
@@ -660,18 +668,25 @@ class MacroService : AccessibilityService() {
         Store.setTapMode(this, m)
         cancelChain()
         if (m == TAP_ADB) AdbClient.connect(applicationContext) else AdbClient.disconnect()
+        syncArm()
         refreshPanel()
     }
 
-    private fun numField(hint: String, value: String, onText: (String) -> Unit): EditText {
+    private fun numField(hint: String, value: String, onText: (String) -> Unit): EditText =
+        textField(hint, value, InputType.TYPE_CLASS_NUMBER, 0, onText)
+
+    private fun textField(
+        hint: String, value: String, type: Int, maxLen: Int, onText: (String) -> Unit
+    ): EditText {
         val et = EditText(this)
+        if (maxLen > 0) et.filters = arrayOf<android.text.InputFilter>(android.text.InputFilter.LengthFilter(maxLen))
         et.setText(value)
         et.hint = hint
         et.setHintTextColor(Theme.MUTED)
         et.setTextColor(Theme.TEXT)
         et.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f)
         et.setSingleLine(true)
-        et.inputType = InputType.TYPE_CLASS_NUMBER
+        et.inputType = type
         et.imeOptions = EditorInfo.IME_ACTION_DONE or EditorInfo.IME_FLAG_NO_EXTRACT_UI
         et.setPadding(dp(10), 0, dp(10), 0)
         et.background = roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.STROKE, dp(1))
@@ -718,6 +733,28 @@ class MacroService : AccessibilityService() {
         st.setPadding(dp(2), dp(6), dp(2), dp(4))
         c.addView(st)
         if (!AdbClient.supported()) return
+
+        if (AdbClient.takeover) {
+            // Tiếp quản sớm: mượt hơn (không khựng giữa chừng khi macro đang bấm). Tắt = chỉ tiếp quản khi macro chạm.
+            val early = Store.earlyTake(this)
+            val er = LinearLayout(this)
+            er.orientation = LinearLayout.HORIZONTAL
+            er.gravity = Gravity.CENTER_VERTICAL
+            er.addView(label("Mượt hơn", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
+            er.addView(actionBtn("Tiếp quản sớm", early) {
+                Store.setEarlyTake(this, true)
+                syncArm()
+                refreshPanel()
+            }, weighted(dp(36), 0, dp(4)))
+            er.addView(actionBtn("Khi macro chạm", !early) {
+                Store.setEarlyTake(this, false)
+                syncArm()
+                refreshPanel()
+            }, weighted(dp(36), dp(4), 0))
+            val el = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            el.bottomMargin = dp(4)
+            c.addView(er, el)
+        }
 
         val btns = LinearLayout(this)
         btns.orientation = LinearLayout.HORIZONTAL
@@ -990,6 +1027,26 @@ class MacroService : AccessibilityService() {
 
     private fun buildEditContent(c: LinearLayout, b: MacroButton) {
         c.removeAllViews()
+
+        // tên tuỳ chỉnh (hiện trên nút, tự co chữ cho vừa nút — không tràn ra ngoài)
+        val nameRow = LinearLayout(this)
+        nameRow.orientation = LinearLayout.HORIZONTAL
+        nameRow.gravity = Gravity.CENTER_VERTICAL
+        nameRow.addView(label("Tên nút", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
+        val nameEt = textField(
+            if (b.kind == Kind.MAIN) "main${b.number}" else b.number.toString(),
+            b.name,
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS,
+            16
+        ) { t ->
+            b.name = t.trim()
+            btnViews[b.id]?.invalidate()
+            persist()
+        }
+        nameRow.addView(nameEt, LinearLayout.LayoutParams(0, dp(36), 1f))
+        val nl0 = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        nl0.bottomMargin = dp(4)
+        c.addView(nameRow, nl0)
 
         c.addView(sliderRow("Kích thước", 28, 140, b.sizeDp, { "${it}dp" }) { v, done ->
             b.sizeDp = v

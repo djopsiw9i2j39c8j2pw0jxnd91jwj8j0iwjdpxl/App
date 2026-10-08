@@ -74,6 +74,12 @@ object AdbClient {
 
     @Volatile
     private var ghostNote = ""
+
+    // Cấu hình "tiếp quản sớm" gửi sang GhostTouch (nhớ lại để gửi lại sau khi nối lại).
+    @Volatile private var armOn = false
+    @Volatile private var armRot = 0
+    @Volatile private var armW = 0
+    @Volatile private var armH = 0
     private var ghostStream: Any? = null
     private var ghostOut: OutputStream? = null
 
@@ -94,7 +100,7 @@ object AdbClient {
 
     fun statusText(): String = when {
         !supported() -> "Cần Android 11 trở lên để dùng Gỡ lỗi WiFi"
-        state == State.CONNECTED && ghostReady && takeover -> "●  Đã kết nối · tiếp quản ngón thật (vừa chỉnh cam vừa macro)"
+        state == State.CONNECTED && ghostReady && takeover -> "●  Đã kết nối · tiếp quản ngón thật" + (if (armOn) " (sớm)" else "")
         state == State.CONNECTED && ghostReady -> "●  Đã kết nối · ngón tay phụ (không chặn ngón thật)"
         state == State.CONNECTED -> "●  Đã kết nối · chạm bằng input tap" +
                 (if (ghostNote.isNotEmpty()) " · $ghostNote" else "")
@@ -460,6 +466,7 @@ object AdbClient {
                         takeover = line.trim().endsWith("TAKEOVER")
                         ghostNote = ""
                         ghostReady = true
+                        sendArm()
                         latch.countDown()
                         notifyUi()
                     }
@@ -488,6 +495,31 @@ object AdbClient {
             ghostStream = null
             ghostOut = null
             notifyUi()
+        }
+    }
+
+    /**
+     * Bật/tắt "tiếp quản sớm" và báo hướng + kích thước màn hình hiện tại cho GhostTouch
+     * (để quy đổi toạ độ ngón thật đúng khi game chạy ngang).
+     */
+    fun arm(on: Boolean, rot: Int, w: Int, h: Int) {
+        armOn = on
+        armRot = rot
+        armW = w
+        armH = h
+        sendArm()
+    }
+
+    private fun sendArm() {
+        val g = ghostOut
+        if (!ghostReady || !takeover || g == null) return
+        val line = "P ${if (armOn) 1 else 0} $armRot $armW $armH\n"
+        io.execute {
+            try {
+                g.write(line.toByteArray())
+                g.flush()
+            } catch (_: Throwable) {
+            }
         }
     }
 

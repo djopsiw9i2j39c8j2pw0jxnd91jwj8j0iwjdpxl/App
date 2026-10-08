@@ -30,7 +30,8 @@ data class MacroButton(
     var alphaPct: Int,     // 0..100 (0 = tàng hình khi chạy; lúc setup luôn hiện tối thiểu 20%)
     var delayMs: Int,      // chỉ NUM: độ trễ trước khi bấm (tốc độ ấn)
     var mainNo: Int,       // chỉ NUM: thuộc main số mấy (0 = chưa nối main nào)
-    var trigger: Int       // chỉ MAIN: TRIG_PRESS / TRIG_RELEASE / TRIG_HOLD
+    var trigger: Int,      // chỉ MAIN: TRIG_PRESS / TRIG_RELEASE / TRIG_HOLD
+    var name: String = ""  // tên tuỳ chỉnh hiện trên nút (rỗng = hiện số / mainN mặc định)
 )
 
 object Store {
@@ -47,6 +48,13 @@ object Store {
 
     fun setTapMode(ctx: Context, m: Int) {
         p(ctx).edit().putInt("tapMode", m).apply()
+    }
+
+    /** Tiếp quản ngón thật SỚM (mượt hơn, không khựng giữa chừng). Mặc định bật. */
+    fun earlyTake(ctx: Context): Boolean = p(ctx).getBoolean("earlyTake", true)
+
+    fun setEarlyTake(ctx: Context, v: Boolean) {
+        p(ctx).edit().putBoolean("earlyTake", v).apply()
     }
 
     fun bubblePos(ctx: Context): Pair<Int, Int>? {
@@ -72,6 +80,7 @@ object Store {
             o.put("delay", b.delayMs)
             o.put("main", b.mainNo)
             o.put("trigger", b.trigger)
+            o.put("name", b.name)
             arr.put(o)
         }
         return arr
@@ -94,7 +103,8 @@ object Store {
                     delayMs = o.optInt("delay", 120),
                     mainNo = o.optInt("main", 0),
                     // tương thích dữ liệu cũ (chỉ có onRelease true/false)
-                    trigger = o.optInt("trigger", if (o.optBoolean("onRelease", false)) TRIG_RELEASE else TRIG_PRESS)
+                    trigger = o.optInt("trigger", if (o.optBoolean("onRelease", false)) TRIG_RELEASE else TRIG_PRESS),
+                    name = o.optString("name", "")
                 )
             )
         }
