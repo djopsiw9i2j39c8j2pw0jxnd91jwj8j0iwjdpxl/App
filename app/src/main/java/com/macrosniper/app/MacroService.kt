@@ -179,7 +179,20 @@ class MacroService : AccessibilityService() {
 
     private fun dp(v: Number): Int = (v.toFloat() * density + 0.5f).toInt()
 
+    private var sizeCache: Pair<Int, Int>? = null
+    private var sizeCacheAt = 0L
+
     private fun screenSize(): Pair<Int, Int> {
+        val now = SystemClock.uptimeMillis()
+        val c = sizeCache
+        if (c != null && now - sizeCacheAt < 250L) return c
+        val r = querySize()
+        sizeCache = r
+        sizeCacheAt = now
+        return r
+    }
+
+    private fun querySize(): Pair<Int, Int> {
         try {
             val dmg = getSystemService(Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
             val d = dmg.getDisplay(android.view.Display.DEFAULT_DISPLAY)
@@ -265,6 +278,7 @@ class MacroService : AccessibilityService() {
         panelLp = null
         panelContent = null
         panelTitle = null
+        flushZombies()
     }
 
     /** Tự động gắn lại mọi giao diện bị hệ thống gỡ mất (máy nóng, lag, thiếu RAM...). */
@@ -391,17 +405,53 @@ class MacroService : AccessibilityService() {
         AdbClient.arm(on, displayRotation(), sw, sh)
     }
 
+    // Cửa sổ cũ chờ gỡ: khi dựng lại giao diện ta gắn bản MỚI lên trước, ~140ms sau mới gỡ bản cũ.
+    // Trước đây gỡ hết rồi mới gắn lại -> mọi nút / bong bóng / bảng biến mất một nhịp mỗi lần thao tác (chớp).
+    private val zombies = ArrayList<View>()
+    private val flushZombiesRun = Runnable { flushZombies() }
+
+    private fun flushZombies() {
+        handler.removeCallbacks(flushZombiesRun)
+        if (!::wm.isInitialized) {
+            zombies.clear()
+            return
+        }
+        for (v in zombies) {
+            try {
+                wm.removeViewImmediate(v)
+            } catch (_: Exception) {
+            }
+        }
+        zombies.clear()
+    }
+
     private fun rebuildAll() {
-        removeAll()
+        if (!::wm.isInitialized) return
+        setPanelFocusable(false)
+        for ((v, _) in live) zombies.add(v)
+        live.clear()
+        btnViews.clear()
+        btnLps.clear()
+        backdrop = null
+        bubble = null
+        panelRoot = null
+        panelLp = null
+        panelContent = null
+        panelTitle = null
         builtTapMode = Store.tapMode(this)
         syncArm()
-        if (mode == Mode.OFF) return
+        if (mode == Mode.OFF) {
+            flushZombies()
+            return
+        }
         val (sw, sh) = screenSize()
         applyOrientation(sw, sh)
         if (mode == Mode.EDIT) addBackdrop()
         for (b in buttons) addButton(b, sw, sh)
         if (mode == Mode.EDIT) addPanel(sw, sh)
         addBubble(sw, sh)
+        handler.removeCallbacks(flushZombiesRun)
+        handler.postDelayed(flushZombiesRun, 140)
     }
 
     private fun addBackdrop() {
@@ -564,10 +614,14 @@ class MacroService : AccessibilityService() {
             alpha = 220
         }
 
+        private val dim = Color.parseColor("#55000000")
+        private var dash: DashPathEffect? = null
+
         override fun onDraw(c: Canvas) {
-            c.drawColor(Color.parseColor("#55000000"))
+            c.drawColor(dim)
             line.strokeWidth = 3f * density
-            line.pathEffect = DashPathEffect(floatArrayOf(14f * density, 10f * density), 0f)
+            if (dash == null) dash = DashPathEffect(floatArrayOf(14f * density, 10f * density), 0f)
+            line.pathEffect = dash
             for (m in buttons.filter { it.kind == Kind.MAIN }) {
                 val seq = buttons
                     .filter { it.kind == Kind.NUM && it.mainNo == m.number }
