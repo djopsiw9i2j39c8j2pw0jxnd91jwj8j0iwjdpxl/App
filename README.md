@@ -27,3 +27,10 @@ Trước đây lệnh `input tap` bị Android coi là một "thiết bị chạ
    - Trạng thái hiện trên bảng nổi / màn hình chính: `ngón tay phụ (không chặn ngón thật)` = đang dùng; `chạm bằng input tap · <lý do>` = máy không cho ghi `/dev/input` nên tự lùi về cách cũ.
    - Nếu máy không hỗ trợ ngón phụ: dùng chế độ **Trợ năng**.
 
+### Chế độ "tiếp quản ngón thật" (máy chặn ghi /dev/input — lỗi `open failed: EACCES`)
+Nhiều máy (vd. Samsung) không cho ghi `/dev/input/eventX` nhưng vẫn cho **đọc**. Khi đó app tự chuyển sang tiếp quản:
+- App đọc toạ độ ngón thật từ `/dev/input` (đọc thì được phép).
+- Khi macro cần chạm, app bơm lại **cả ngón thật lẫn ngón macro** thành MỘT luồng đa chạm nhất quán (qua `injectInputEvent` với quyền shell). Ngón thật vẫn xoay camera / bấm nút khác bình thường, ngón macro là con trỏ thêm.
+- Mọi ngón thật nhấc lên thì app nhả luồng, trả lại cho hệ thống.
+- Trạng thái hiện: `tiếp quản ngón thật (vừa chỉnh cam vừa macro)`.
+- Game có thể thấy 1 lần "huỷ cử chỉ" lúc macro chạm đầu tiên khi tay đang đặt, rồi ngón được nuôi tiếp ngay tại chỗ (camera không rơi). Nút main đang giữ (Giữ lặp) đã được xử lý để không bị ngắt vì cú huỷ này.
