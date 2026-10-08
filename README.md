@@ -34,3 +34,11 @@ Nhiều máy (vd. Samsung) không cho ghi `/dev/input/eventX` nhưng vẫn cho *
 - Mọi ngón thật nhấc lên thì app nhả luồng, trả lại cho hệ thống.
 - Trạng thái hiện: `tiếp quản ngón thật (vừa chỉnh cam vừa macro)`.
 - Game có thể thấy 1 lần "huỷ cử chỉ" lúc macro chạm đầu tiên khi tay đang đặt, rồi ngón được nuôi tiếp ngay tại chỗ (camera không rơi). Nút main đang giữ (Giữ lặp) đã được xử lý để không bị ngắt vì cú huỷ này.
+
+### Chống khựng: "Tiếp quản sớm" (mặc định bật)
+- Luồng bơm bắt đầu ngay khi ngón thật vừa chạm xuống (lúc game chưa kịp kéo camera), nên macro bấm bao nhiêu cũng không còn bị "kẹt 1 tý" giữa chừng.
+- Gộp các khung cảm ứng chờ sẵn thành 1 lần bơm (không dồn hàng đợi), id con trỏ luôn nhỏ nhất có thể, luồng đọc ưu tiên cao.
+- Công tắc trên bảng nổi → *Chế độ chạm* → **Mượt hơn**: `Tiếp quản sớm` (mặc định) hoặc `Khi macro chạm` (chỉ tiếp quản lúc macro bấm, như bản trước).
+
+## Tên tuỳ chỉnh cho nút
+Chạm nút ở chế độ setup → ô **Tên nút** (tối đa 16 ký tự). Để trống = hiện số / `mainN`. Chữ tự co nhỏ, xuống 2 dòng (nếu có dấu cách) hoặc cắt "…" để luôn nằm gọn trong nút. Tên được lưu cùng macro.
