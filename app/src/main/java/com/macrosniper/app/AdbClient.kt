@@ -79,6 +79,16 @@ object AdbClient {
 
     @Volatile
     private var touch: TouchDev? = null
+
+    // Helper = TouchServer chạy bằng quyền shell (xem TouchServer.kt)
+    @Volatile
+    private var helperReady = false
+    private var helperStream: Any? = null
+    private var helperOut: OutputStream? = null
+
+    @Volatile
+    var helperError: String = ""
+        private set
     private val tidCounter = AtomicInteger()
 
     private val ui = Handler(Looper.getMainLooper())
@@ -95,8 +105,9 @@ object AdbClient {
 
     fun statusText(): String = when {
         !supported() -> "Cần Android 11 trở lên để dùng Gỡ lỗi WiFi"
+        state == State.CONNECTED && helperReady -> "●  Đã kết nối · helper chạm liền mạch (không chặn tay bạn)"
         state == State.CONNECTED && touch != null -> "●  Đã kết nối · chạm đa điểm (vẫn xoay/di chuyển được)"
-        state == State.CONNECTED -> "●  Đã kết nối · chạm bằng input tap (có thể bị đơ khi xoay)"
+        state == State.CONNECTED -> "●  Đã kết nối · chạm bằng input tap (có thể bị đơ)" + (if (helperError.isNotEmpty()) " · helper lỗi: $helperError" else "")
         state == State.CONNECTING -> "…  Đang kết nối"
         else -> "○  Chưa kết nối" + (if (lastError.isNotEmpty()) " · $lastError" else "")
     }
@@ -301,7 +312,9 @@ object AdbClient {
                 val outs = st.openOutputStream()
                 stream = st
                 outS = outs
-                touch = probeTouch(m)
+                // ưu tiên helper (tiến trình nền quyền shell); không chạy được mới thử sendevent / input tap
+                val apk = app.applicationInfo.sourceDir
+                if (!startHelper(m, apk)) touch = probeTouch(m)
                 lastError = ""
                 state = State.CONNECTED
                 notifyUi()
@@ -515,6 +528,7 @@ object AdbClient {
         stream = null
         outS = null
         touch = null
+        closeHelper()
         val pending = acks.values.toList()
         acks.clear()
         for (a in pending) {
@@ -522,6 +536,80 @@ object AdbClient {
                 a()
             } catch (_: Throwable) {
             }
+        }
+    }
+
+    /** Mở TouchServer qua 1 luồng shell riêng. true = helper đã báo READY. */
+    private fun startHelper(m: AbsAdbConnectionManager, apk: String): Boolean {
+        helperError = ""
+        try {
+            val s = m.openStream("shell:CLASSPATH=$apk exec app_process /system/bin com.macrosniper.app.TouchServer")
+            val ins = s.openInputStream()
+            val outs = s.openOutputStream()
+            helperStream = s
+            helperOut = outs
+            val latch = CountDownLatch(1)
+            val t = Thread {
+                try {
+                    val r = BufferedReader(InputStreamReader(ins))
+                    while (true) {
+                        val line = r.readLine() ?: break
+                        if (line.contains("__MSREADY")) {
+                            helperReady = true
+                            latch.countDown()
+                        } else if (line.contains("__MSERR")) {
+                            helperError = line.substringAfter("__MSERR").trim()
+                            latch.countDown()
+                        } else {
+                            ackLine(line)
+                        }
+                    }
+                } catch (_: Throwable) {
+                }
+                latch.countDown()
+                if (helperStream === s) { // helper chết giữa chừng -> tạm lùi về cách khác
+                    helperReady = false
+                    helperStream = null
+                    helperOut = null
+                }
+            }
+            t.isDaemon = true
+            t.start()
+            if (latch.await(7, TimeUnit.SECONDS) && helperReady) return true
+            if (helperError.isEmpty()) helperError = "helper không phản hồi"
+            closeHelper()
+            return false
+        } catch (t: Throwable) {
+            helperError = friendly(t)
+            closeHelper()
+            return false
+        }
+    }
+
+    private fun closeHelper() {
+        helperReady = false
+        try {
+            helperOut?.write("Q\n".toByteArray())
+            helperOut?.flush()
+        } catch (_: Throwable) {
+        }
+        try {
+            helperOut?.close()
+        } catch (_: Throwable) {
+        }
+        try {
+            (helperStream as? Closeable)?.close()
+        } catch (_: Throwable) {
+        }
+        helperStream = null
+        helperOut = null
+    }
+
+    private fun ackLine(line: String) {
+        val i = line.indexOf("__MSDONE_")
+        if (i >= 0) {
+            val n = line.substring(i + 9).takeWhile { it.isDigit() }.toIntOrNull()
+            if (n != null) acks.remove(n)?.invoke()
         }
     }
 
@@ -605,6 +693,20 @@ object AdbClient {
         if (state != State.CONNECTED || o == null) return false
         val id = seq.incrementAndGet()
         acks[id] = done
+        val ho = helperOut
+        if (helperReady && ho != null) {
+            // đường chính: helper bơm cảm ứng trực tiếp, chỉ cần gửi 1 dòng
+            io.execute {
+                try {
+                    ho.write("$id T $x $y\n".toByteArray())
+                    ho.flush()
+                } catch (_: Throwable) {
+                    helperReady = false // helper rớt -> các lần sau tự dùng cách dự phòng
+                    acks.remove(id)?.invoke()
+                }
+            }
+            return true
+        }
         val td = touch
         val cmd = if (td != null && screenW > 0 && screenH > 0) {
             evTap(td, x, y, rotation and 3, screenW, screenH)
