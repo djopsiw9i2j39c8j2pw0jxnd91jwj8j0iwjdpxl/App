@@ -1,6 +1,8 @@
 package com.macrosniper.app
 
 import android.content.Context
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -27,6 +29,8 @@ import java.text.SimpleDateFormat
 import java.util.TimeZone
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -245,7 +249,9 @@ object AdbClient {
         bg.execute {
             try {
                 val m = manager(app)
-                m.connectTls(app, 10_000L)
+                val port = discoverConnectPort(app, 8000L)
+                    ?: throw IllegalStateException("không thấy dịch vụ Gỡ lỗi không dây (đã bật chưa? có Wi-Fi chưa?)")
+                m.connect("127.0.0.1", port)
                 val st = m.openStream("shell:")
                 val ins = st.openInputStream()
                 val outs = st.openOutputStream()
@@ -264,6 +270,65 @@ object AdbClient {
                 notifyUi()
             }
         }
+    }
+
+    /**
+     * Tự dò cổng kết nối của Gỡ lỗi không dây bằng mDNS (dịch vụ _adb-tls-connect._tcp).
+     * Chỉ nhận dịch vụ của CHÍNH máy này (tránh nhầm máy khác trong cùng mạng Wi-Fi).
+     */
+    private fun discoverConnectPort(app: Context, timeoutMs: Long): Int? {
+        val nsd = app.getSystemService(Context.NSD_SERVICE) as NsdManager
+        val locals = HashSet<String>()
+        try {
+            for (ni in java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces())) {
+                for (a in java.util.Collections.list(ni.inetAddresses)) {
+                    val h = a.hostAddress
+                    if (h != null) locals.add(h.substringBefore('%'))
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        val latch = CountDownLatch(1)
+        var found: Int? = null
+        val listener = object : NsdManager.DiscoveryListener {
+            override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) {
+                latch.countDown()
+            }
+
+            override fun onStopDiscoveryFailed(serviceType: String?, errorCode: Int) {}
+            override fun onDiscoveryStarted(serviceType: String?) {}
+            override fun onDiscoveryStopped(serviceType: String?) {}
+            override fun onServiceLost(serviceInfo: NsdServiceInfo?) {}
+            override fun onServiceFound(serviceInfo: NsdServiceInfo?) {
+                if (serviceInfo == null) return
+                try {
+                    nsd.resolveService(serviceInfo, object : NsdManager.ResolveListener {
+                        override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {}
+                        override fun onServiceResolved(serviceInfo: NsdServiceInfo?) {
+                            if (serviceInfo == null || found != null) return
+                            val h = serviceInfo.host
+                            val addr = h?.hostAddress?.substringBefore('%')
+                            val mine = h == null || h.isLoopbackAddress || (addr != null && locals.contains(addr))
+                            if (mine) {
+                                found = serviceInfo.port
+                                latch.countDown()
+                            }
+                        }
+                    })
+                } catch (_: Throwable) {
+                }
+            }
+        }
+        try {
+            nsd.discoverServices("_adb-tls-connect._tcp", NsdManager.PROTOCOL_DNS_SD, listener)
+            latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        } catch (_: Throwable) {
+        }
+        try {
+            nsd.stopServiceDiscovery(listener)
+        } catch (_: Throwable) {
+        }
+        return found
     }
 
     private fun friendly(t: Throwable): String {
