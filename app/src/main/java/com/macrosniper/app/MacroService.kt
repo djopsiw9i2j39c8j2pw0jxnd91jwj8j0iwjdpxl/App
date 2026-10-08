@@ -822,10 +822,6 @@ class MacroService : AccessibilityService() {
         )
         c.addView(btns)
 
-        val reLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(36))
-        reLp.topMargin = dp(6)
-        c.addView(actionBtn("Bật lại gỡ lỗi WiFi", false) { toast(AdbClient.reEnable(applicationContext)) }, reLp)
-
         if (!pairOpen) return
 
         val hint = label(
