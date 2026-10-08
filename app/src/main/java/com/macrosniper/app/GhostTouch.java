@@ -241,28 +241,75 @@ public final class GhostTouch implements Toucher {
         public void run() {
             try (InputStream in = new FileInputStream(path)) {
                 byte[] buf = new byte[evSize * 64];
+                byte[] pending = new byte[evSize];
+                int pendingLen = 0;
                 ok = true;
                 while (true) {
                     int n = in.read(buf);
                     if (n <= 0) break;
-                    ByteBuffer bb = ByteBuffer.wrap(buf, 0, n - (n % evSize)).order(ByteOrder.LITTLE_ENDIAN);
-                    while (bb.remaining() >= evSize) {
-                        bb.position(bb.position() + (evSize - 8));
-                        int type = bb.getShort() & 0xFFFF;
-                        int code = bb.getShort() & 0xFFFF;
-                        int value = bb.getInt();
-                        if (type != EV_ABS) continue;
-                        if (code == ABS_MT_SLOT) {
-                            if (value >= 0 && value < active.length) {
-                                curSlot = value;
-                                if (value != ghostSlot) lastRealSlot = value;
+
+                    int off = 0;
+                    // InputStream.read() is NOT required to return whole evdev records.
+                    // Keep the tail and prepend it to the next read; otherwise a split
+                    // input_event corrupts slot/tracking state and can make the replayed
+                    // finger disappear for a frame.
+                    if (pendingLen != 0) {
+                        int need = evSize - pendingLen;
+                        int take = Math.min(need, n);
+                        System.arraycopy(buf, 0, pending, pendingLen, take);
+                        pendingLen += take;
+                        off += take;
+                        if (pendingLen == evSize) {
+                            ByteBuffer one = ByteBuffer.wrap(pending).order(ByteOrder.LITTLE_ENDIAN);
+                            one.position(evSize - 8);
+                            int type = one.getShort() & 0xFFFF;
+                            int code = one.getShort() & 0xFFFF;
+                            int value = one.getInt();
+                            if (type == EV_ABS) {
+                                if (code == ABS_MT_SLOT) {
+                                    if (value >= 0 && value < active.length) {
+                                        curSlot = value;
+                                        if (value != ghostSlot) lastRealSlot = value;
+                                    }
+                                } else if (code == ABS_MT_TRACKING_ID) {
+                                    int s = curSlot;
+                                    synchronized (active) {
+                                        if (s >= 0 && s < active.length) active[s] = value != -1;
+                                    }
+                                }
                             }
-                        } else if (code == ABS_MT_TRACKING_ID) {
-                            int s = curSlot;
-                            synchronized (active) {
-                                if (s >= 0 && s < active.length) active[s] = value != -1;
+                            pendingLen = 0;
+                        }
+                    }
+
+                    int whole = ((n - off) / evSize) * evSize;
+                    if (whole > 0) {
+                        ByteBuffer bb = ByteBuffer.wrap(buf, off, whole).order(ByteOrder.LITTLE_ENDIAN);
+                        while (bb.remaining() >= evSize) {
+                            bb.position(bb.position() + (evSize - 8));
+                            int type = bb.getShort() & 0xFFFF;
+                            int code = bb.getShort() & 0xFFFF;
+                            int value = bb.getInt();
+                            if (type != EV_ABS) continue;
+                            if (code == ABS_MT_SLOT) {
+                                if (value >= 0 && value < active.length) {
+                                    curSlot = value;
+                                    if (value != ghostSlot) lastRealSlot = value;
+                                }
+                            } else if (code == ABS_MT_TRACKING_ID) {
+                                int s = curSlot;
+                                synchronized (active) {
+                                    if (s >= 0 && s < active.length) active[s] = value != -1;
+                                }
                             }
                         }
+                        off += whole;
+                    }
+
+                    int remain = n - off;
+                    if (remain > 0) {
+                        System.arraycopy(buf, off, pending, 0, remain);
+                        pendingLen = remain;
                     }
                 }
             } catch (Throwable t) {
@@ -431,18 +478,53 @@ public final class GhostTouch implements Toucher {
             }
             try {
                 byte[] buf = new byte[evSize * 128];
+                byte[] pending = new byte[evSize];
+                int pendingLen = 0;
                 while (true) {
                     int len = in.read(buf);
                     if (len <= 0) break;
-                    ByteBuffer bb = ByteBuffer.wrap(buf, 0, len - (len % evSize)).order(ByteOrder.LITTLE_ENDIAN);
-                    while (bb.remaining() >= evSize) {
-                        bb.position(bb.position() + (evSize - 8));
-                        int type = bb.getShort() & 0xFFFF;
-                        int code = bb.getShort() & 0xFFFF;
-                        int value = bb.getInt();
-                        feed(type, code, value);
+
+                    int off = 0;
+                    // Preserve partial input_event records across reads. Dropping the
+                    // remainder can lose ABS_MT_SLOT/TRACKING_ID/POSITION events and
+                    // is enough to make a real finger appear to "randomly" disappear.
+                    if (pendingLen != 0) {
+                        int need = evSize - pendingLen;
+                        int take = Math.min(need, len);
+                        System.arraycopy(buf, 0, pending, pendingLen, take);
+                        pendingLen += take;
+                        off += take;
+                        if (pendingLen == evSize) {
+                            ByteBuffer one = ByteBuffer.wrap(pending).order(ByteOrder.LITTLE_ENDIAN);
+                            one.position(evSize - 8);
+                            int type = one.getShort() & 0xFFFF;
+                            int code = one.getShort() & 0xFFFF;
+                            int value = one.getInt();
+                            feed(type, code, value);
+                            pendingLen = 0;
+                        }
                     }
-                    flush(); // gộp mọi khung đã đọc được thành 1 lần bơm (trạng thái mới nhất)
+
+                    int whole = ((len - off) / evSize) * evSize;
+                    if (whole > 0) {
+                        ByteBuffer bb = ByteBuffer.wrap(buf, off, whole).order(ByteOrder.LITTLE_ENDIAN);
+                        while (bb.remaining() >= evSize) {
+                            bb.position(bb.position() + (evSize - 8));
+                            int type = bb.getShort() & 0xFFFF;
+                            int code = bb.getShort() & 0xFFFF;
+                            int value = bb.getInt();
+                            feed(type, code, value);
+                        }
+                        off += whole;
+                    }
+
+                    int remain = len - off;
+                    if (remain > 0) {
+                        System.arraycopy(buf, off, pending, 0, remain);
+                        pendingLen = remain;
+                    }
+
+                    flush(); // gộp mọi khung đã đọc được thành 1 lần bơm
                 }
             } catch (Throwable t) {
                 lastError = String.valueOf(t);
