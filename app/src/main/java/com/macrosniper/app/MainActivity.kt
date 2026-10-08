@@ -101,7 +101,7 @@ class MainActivity : Activity() {
         col.addView(logo, LinearLayout.LayoutParams(dp(132), dp(132)))
 
         // tên app
-        val title = text("MACRO SNIPER", 32f, Theme.ACCENT, true)
+        val title = text("MACRO TOUCH", 32f, Theme.ACCENT, true)
         title.letterSpacing = 0.14f
         title.gravity = Gravity.CENTER
         val tlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)

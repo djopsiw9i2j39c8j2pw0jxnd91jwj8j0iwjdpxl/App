@@ -669,7 +669,7 @@ class MacroService : AccessibilityService() {
         logo.setImageResource(R.drawable.logo_bubble)
         header.addView(logo, LinearLayout.LayoutParams(dp(28), dp(28)))
 
-        val title = label("MACRO SNIPER", 15f, Theme.ACCENT, true)
+        val title = label("MACRO TOUCH", 15f, Theme.ACCENT, true)
         title.letterSpacing = 0.06f
         title.setPadding(dp(8), 0, 0, 0)
         header.addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -728,7 +728,7 @@ class MacroService : AccessibilityService() {
         val b = buttons.firstOrNull { it.id == selectedId }
         if (b == null) {
             selectedId = -1
-            panelTitle?.text = "MACRO SNIPER  ·  SETUP"
+            panelTitle?.text = "MACRO TOUCH  ·  SETUP"
             buildAddContent(content)
         } else {
             panelTitle?.text = if (b.kind == Kind.MAIN) "Chỉnh main${b.number}" else if (b.mainNo > 0) "Chỉnh nút ${b.number}  ·  main${b.mainNo}" else "Chỉnh nút ${b.number}"
