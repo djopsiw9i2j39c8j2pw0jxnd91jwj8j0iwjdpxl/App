@@ -7,21 +7,6 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Base64
 import io.github.muntashirakon.adb.AbsAdbConnectionManager
-import sun.security.x509.AlgorithmId
-import sun.security.x509.CertificateAlgorithmId
-import sun.security.x509.CertificateExtensions
-import sun.security.x509.CertificateIssuerName
-import sun.security.x509.CertificateSerialNumber
-import sun.security.x509.CertificateSubjectName
-import sun.security.x509.CertificateValidity
-import sun.security.x509.CertificateVersion
-import sun.security.x509.CertificateX509Key
-import sun.security.x509.KeyIdentifier
-import sun.security.x509.PrivateKeyUsageExtension
-import sun.security.x509.SubjectKeyIdentifierExtension
-import sun.security.x509.X500Name
-import sun.security.x509.X509CertImpl
-import sun.security.x509.X509CertInfo
 import java.io.BufferedReader
 import java.io.ByteArrayInputStream
 import java.io.Closeable
@@ -37,6 +22,9 @@ import java.security.cert.CertificateFactory
 import java.security.spec.PKCS8EncodedKeySpec
 import java.util.Date
 import java.util.Random
+import java.security.Signature
+import java.text.SimpleDateFormat
+import java.util.TimeZone
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
@@ -106,6 +94,59 @@ object AdbClient {
         }
     }
 
+
+    // ------------------------------------------------------------------ chứng chỉ tự ký (DER thủ công)
+
+    private fun derLen(n: Int): ByteArray = when {
+        n < 128 -> byteArrayOf(n.toByte())
+        n < 256 -> byteArrayOf(0x81.toByte(), n.toByte())
+        else -> byteArrayOf(0x82.toByte(), (n shr 8).toByte(), n.toByte())
+    }
+
+    private fun der(tag: Int, vararg parts: ByteArray): ByteArray {
+        var body = ByteArray(0)
+        for (p in parts) body += p
+        return byteArrayOf(tag.toByte()) + derLen(body.size) + body
+    }
+
+    private fun utcTime(ms: Long): ByteArray {
+        val f = SimpleDateFormat("yyMMddHHmmss'Z'", java.util.Locale.US)
+        f.timeZone = TimeZone.getTimeZone("UTC")
+        return der(0x17, f.format(Date(ms)).toByteArray(Charsets.US_ASCII))
+    }
+
+    /** X.509 v3 tự ký, RSA-2048 + SHA256withRSA. [spki] là SubjectPublicKeyInfo của khoá công khai. */
+    private fun selfSignedDer(spki: ByteArray, priv: PrivateKey): ByteArray {
+        val sigAlg = der(
+            0x30,
+            byteArrayOf(0x06, 0x09, 0x2A, 0x86.toByte(), 0x48, 0x86.toByte(), 0xF7.toByte(), 0x0D, 0x01, 0x01, 0x0B),
+            byteArrayOf(0x05, 0x00)
+        )
+        val name = der(
+            0x30,
+            der(
+                0x31,
+                der(
+                    0x30,
+                    byteArrayOf(0x06, 0x03, 0x55, 0x04, 0x03),
+                    der(0x0C, "MacroSniper".toByteArray(Charsets.UTF_8))
+                )
+            )
+        )
+        val serial = ByteArray(8)
+        SecureRandom().nextBytes(serial)
+        serial[0] = (serial[0].toInt() and 0x7F or 0x40).toByte() // dương, khác 0
+        val now = System.currentTimeMillis()
+        val validity = der(0x30, utcTime(now - 86_400_000L), utcTime(now + 20L * 365L * 86_400_000L))
+        val version = der(0xA0, der(0x02, byteArrayOf(0x02)))
+        val tbs = der(0x30, version, der(0x02, serial), sigAlg, name, validity, name, spki)
+        val sig = Signature.getInstance("SHA256withRSA")
+        sig.initSign(priv)
+        sig.update(tbs)
+        val sigBytes = sig.sign()
+        return der(0x30, tbs, sigAlg, der(0x03, byteArrayOf(0x00), sigBytes))
+    }
+
     // ------------------------------------------------------------------ khoá + chứng chỉ
 
     private class Mgr(ctx: Context) : AbsAdbConnectionManager() {
@@ -134,26 +175,10 @@ object AdbClient {
                 val kpg = KeyPairGenerator.getInstance("RSA")
                 kpg.initialize(2048, SecureRandom())
                 val kp = kpg.generateKeyPair()
-                val pub = kp.public
                 val pk = kp.private
-                val alg = "SHA512withRSA"
-                val notBefore = Date()
-                val notAfter = Date(System.currentTimeMillis() + 20L * 365L * 86400000L)
-                val ext = CertificateExtensions()
-                ext.set("SubjectKeyIdentifier", SubjectKeyIdentifierExtension(KeyIdentifier(pub).identifier))
-                ext.set("PrivateKeyUsage", PrivateKeyUsageExtension(notBefore, notAfter))
-                val name = X500Name("CN=MacroSniper")
-                val info = X509CertInfo()
-                info.set("version", CertificateVersion(2))
-                info.set("serialNumber", CertificateSerialNumber(Random().nextInt() and Int.MAX_VALUE))
-                info.set("algorithmID", CertificateAlgorithmId(AlgorithmId.get(alg)))
-                info.set("subject", CertificateSubjectName(name))
-                info.set("key", CertificateX509Key(pub))
-                info.set("validity", CertificateValidity(notBefore, notAfter))
-                info.set("issuer", CertificateIssuerName(name))
-                info.set("extensions", ext)
-                val impl = X509CertImpl(info)
-                impl.sign(pk, alg)
+                val der = selfSignedDer(kp.public.encoded, pk)
+                val impl = CertificateFactory.getInstance("X.509")
+                    .generateCertificate(ByteArrayInputStream(der))
                 k = pk
                 c = impl
                 sp.edit()
