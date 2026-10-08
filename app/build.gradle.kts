@@ -48,3 +48,10 @@ android {
         jvmTarget = "17"
     }
 }
+
+dependencies {
+    // Máy khách ADB tự nhúng cho chế độ "Gỡ lỗi WiFi" (không cần app ngoài)
+    implementation("com.github.MuntashirAkon:libadb-android:1.0.1")
+    implementation("com.github.MuntashirAkon:sun-security-android:1.1")
+    implementation("org.conscrypt:conscrypt-android:2.5.2")
+}
