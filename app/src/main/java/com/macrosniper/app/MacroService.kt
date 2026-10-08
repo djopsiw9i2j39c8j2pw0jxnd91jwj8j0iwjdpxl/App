@@ -173,6 +173,17 @@ class MacroService : AccessibilityService() {
     private fun dp(v: Number): Int = (v.toFloat() * density + 0.5f).toInt()
 
     private fun screenSize(): Pair<Int, Int> {
+        try {
+            val dmg = getSystemService(Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
+            val d = dmg.getDisplay(android.view.Display.DEFAULT_DISPLAY)
+            if (d != null) {
+                val m = DisplayMetrics()
+                @Suppress("DEPRECATION")
+                d.getRealMetrics(m)
+                if (m.widthPixels > 0 && m.heightPixels > 0) return Pair(m.widthPixels, m.heightPixels)
+            }
+        } catch (_: Exception) {
+        }
         return if (Build.VERSION.SDK_INT >= 30) {
             val b = wm.maximumWindowMetrics.bounds
             Pair(b.width(), b.height())
@@ -309,7 +320,7 @@ class MacroService : AccessibilityService() {
 
     /** Báo GhostTouch bật "tiếp quản sớm" khi đang chạy macro bằng Gỡ lỗi WiFi (kèm hướng + cỡ màn hình). */
     private fun syncArm() {
-        val on = mode == Mode.RUN && Store.tapMode(this) == TAP_ADB && Store.earlyTake(this)
+        val on = mode == Mode.RUN
         val (sw, sh) = screenSize()
         AdbClient.arm(on, displayRotation(), sw, sh)
     }
@@ -719,42 +730,11 @@ class MacroService : AccessibilityService() {
     }
 
     private fun buildModeSection(c: LinearLayout) {
-        val cur = Store.tapMode(this)
-        val row = LinearLayout(this)
-        row.orientation = LinearLayout.HORIZONTAL
-        row.gravity = Gravity.CENTER_VERTICAL
-        row.addView(label("Chế độ chạm", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
-        row.addView(actionBtn("Trợ năng", cur == TAP_ACC) { setTapMode(TAP_ACC) }, weighted(dp(36), 0, dp(4)))
-        row.addView(actionBtn("Gỡ lỗi WiFi", cur == TAP_ADB) { setTapMode(TAP_ADB) }, weighted(dp(36), dp(4), 0))
-        c.addView(row)
-        if (cur != TAP_ADB) return
-
+        c.addView(label("Kết nối chạm (Gỡ lỗi WiFi)", 12f, Theme.MUTED))
         val st = label(AdbClient.statusText(), 12f, AdbClient.statusColor(), true)
         st.setPadding(dp(2), dp(6), dp(2), dp(4))
         c.addView(st)
         if (!AdbClient.supported()) return
-
-        if (AdbClient.takeover) {
-            // Tiếp quản sớm: mượt hơn (không khựng giữa chừng khi macro đang bấm). Tắt = chỉ tiếp quản khi macro chạm.
-            val early = Store.earlyTake(this)
-            val er = LinearLayout(this)
-            er.orientation = LinearLayout.HORIZONTAL
-            er.gravity = Gravity.CENTER_VERTICAL
-            er.addView(label("Mượt hơn", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
-            er.addView(actionBtn("Tiếp quản sớm", early) {
-                Store.setEarlyTake(this, true)
-                syncArm()
-                refreshPanel()
-            }, weighted(dp(36), 0, dp(4)))
-            er.addView(actionBtn("Khi macro chạm", !early) {
-                Store.setEarlyTake(this, false)
-                syncArm()
-                refreshPanel()
-            }, weighted(dp(36), dp(4), 0))
-            val el = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            el.bottomMargin = dp(4)
-            c.addView(er, el)
-        }
 
         val btns = LinearLayout(this)
         btns.orientation = LinearLayout.HORIZONTAL
@@ -1345,13 +1325,13 @@ class MacroService : AccessibilityService() {
         val loc = IntArray(2)
         v.getLocationOnScreen(loc)
 
-        if (Store.tapMode(this) == TAP_ADB) {
+        if (AdbClient.isConnected() && AdbClient.ghostReady) {
             // chạm qua Gỡ lỗi WiFi: báo xong thì mới đi tiếp. Kèm hướng xoay + kích thước màn hình để
             // "ngón tay phụ" đổi đúng toạ độ sang tấm cảm ứng (kể cả khi game chạy ngang).
             val (sw, sh) = screenSize()
             val ok = AdbClient.tap(
-                (loc[0] + v.width / 2f).toInt(),
-                (loc[1] + v.height / 2f).toInt(),
+                Math.round(loc[0] + v.width / 2f),
+                Math.round(loc[1] + v.height / 2f),
                 displayRotation(), sw, sh
             ) { handler.post { finish() } }
             v.flashFx()
@@ -1360,7 +1340,7 @@ class MacroService : AccessibilityService() {
                 val now = SystemClock.uptimeMillis()
                 if (now - lastAdbWarn > 3000) {
                     lastAdbWarn = now
-                    toast("Gỡ lỗi WiFi chưa kết nối · chạm bong bóng, đổi sang chế độ Trợ năng để dùng tạm")
+                    toast("Chưa kết nối Gỡ lỗi WiFi · chạm bong bóng → Ghép cặp / Kết nối")
                 }
             } else {
                 // đề phòng shell không báo lại: tự đi tiếp sau 1,5 giây

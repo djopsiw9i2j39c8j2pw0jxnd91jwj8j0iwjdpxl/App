@@ -72,6 +72,14 @@ object AdbClient {
     var takeover = false
         private set
 
+    /** true = đã GIÀNH độc quyền màn hình cảm ứng (EVIOCGRAB): ngón thật + ngón macro chung 1 luồng, không còn xung đột. */
+    @Volatile
+    var grabbed = false
+        private set
+
+    @Volatile
+    private var grabNote = ""
+
     @Volatile
     private var ghostNote = ""
 
@@ -84,7 +92,7 @@ object AdbClient {
     private var ghostOut: OutputStream? = null
 
     /** Thời gian ngón phụ đè xuống mỗi cú chạm (ms). */
-    private const val GHOST_HOLD_MS = 35
+    private const val GHOST_HOLD_MS = 25
 
     private val ui = Handler(Looper.getMainLooper())
     private val bg = Executors.newSingleThreadExecutor() // kết nối / ghép cặp (chặn lâu)
@@ -100,7 +108,9 @@ object AdbClient {
 
     fun statusText(): String = when {
         !supported() -> "Cần Android 11 trở lên để dùng Gỡ lỗi WiFi"
-        state == State.CONNECTED && ghostReady && takeover -> "●  Đã kết nối · tiếp quản ngón thật" + (if (armOn) " (sớm)" else "")
+        state == State.CONNECTED && ghostReady && takeover && grabbed -> "●  Đã kết nối · chạm hợp nhất (1 luồng, không mất ngón thật)"
+        state == State.CONNECTED && ghostReady && takeover -> "●  Đã kết nối · tiếp quản ngón thật" +
+                (if (grabNote.isNotEmpty()) " · chưa giành được cảm ứng: $grabNote" else if (armOn) " · đang chờ giành cảm ứng" else "")
         state == State.CONNECTED && ghostReady -> "●  Đã kết nối · ngón tay phụ (không chặn ngón thật)"
         state == State.CONNECTED -> "●  Đã kết nối · chạm bằng input tap" +
                 (if (ghostNote.isNotEmpty()) " · $ghostNote" else "")
@@ -474,13 +484,20 @@ object AdbClient {
                         ghostNote = line.removePrefix("FAIL").trim().take(70)
                         latch.countDown()
                     }
+                    line.startsWith("GRAB") -> {
+                        grabbed = line.startsWith("GRAB 1")
+                        grabNote = if (grabbed) "" else line.removePrefix("GRAB 0").trim().take(70)
+                        notifyUi()
+                    }
                     line.startsWith("D ") -> {
                         line.substring(2).trim().substringBefore(' ').toIntOrNull()?.let { acks.remove(it)?.invoke() }
                     }
                     line.startsWith("E ") -> {
                         // lỗi giữa chừng -> các cú chạm sau tạm dùng input tap
-                        ghostReady = false
-                        ghostNote = "ngón phụ lỗi, tạm dùng input tap"
+                        if (!takeover) {
+                            ghostReady = false
+                            ghostNote = "ngón phụ lỗi, tạm dùng input tap"
+                        }
                         line.substring(2).trim().substringBefore(' ').toIntOrNull()?.let { acks.remove(it)?.invoke() }
                         notifyUi()
                     }
@@ -526,6 +543,8 @@ object AdbClient {
     private fun closeGhost() {
         ghostReady = false
         takeover = false
+        grabbed = false
+        grabNote = ""
         val o = ghostOut
         try {
             o?.write("Q\n".toByteArray())

@@ -44,7 +44,7 @@ object Store {
         p(ctx).edit().putBoolean("running", v).apply()
     }
 
-    fun tapMode(ctx: Context): Int = p(ctx).getInt("tapMode", TAP_ACC)
+    fun tapMode(ctx: Context): Int = TAP_ADB // đã bỏ chọn chế độ: luôn dùng engine chạm hợp nhất, tự lùi về Trợ năng nếu chưa kết nối
 
     fun setTapMode(ctx: Context, m: Int) {
         p(ctx).edit().putInt("tapMode", m).apply()

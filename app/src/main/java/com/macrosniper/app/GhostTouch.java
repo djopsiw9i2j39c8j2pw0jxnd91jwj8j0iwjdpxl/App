@@ -241,75 +241,28 @@ public final class GhostTouch implements Toucher {
         public void run() {
             try (InputStream in = new FileInputStream(path)) {
                 byte[] buf = new byte[evSize * 64];
-                byte[] pending = new byte[evSize];
-                int pendingLen = 0;
                 ok = true;
                 while (true) {
                     int n = in.read(buf);
                     if (n <= 0) break;
-
-                    int off = 0;
-                    // InputStream.read() is NOT required to return whole evdev records.
-                    // Keep the tail and prepend it to the next read; otherwise a split
-                    // input_event corrupts slot/tracking state and can make the replayed
-                    // finger disappear for a frame.
-                    if (pendingLen != 0) {
-                        int need = evSize - pendingLen;
-                        int take = Math.min(need, n);
-                        System.arraycopy(buf, 0, pending, pendingLen, take);
-                        pendingLen += take;
-                        off += take;
-                        if (pendingLen == evSize) {
-                            ByteBuffer one = ByteBuffer.wrap(pending).order(ByteOrder.LITTLE_ENDIAN);
-                            one.position(evSize - 8);
-                            int type = one.getShort() & 0xFFFF;
-                            int code = one.getShort() & 0xFFFF;
-                            int value = one.getInt();
-                            if (type == EV_ABS) {
-                                if (code == ABS_MT_SLOT) {
-                                    if (value >= 0 && value < active.length) {
-                                        curSlot = value;
-                                        if (value != ghostSlot) lastRealSlot = value;
-                                    }
-                                } else if (code == ABS_MT_TRACKING_ID) {
-                                    int s = curSlot;
-                                    synchronized (active) {
-                                        if (s >= 0 && s < active.length) active[s] = value != -1;
-                                    }
-                                }
+                    ByteBuffer bb = ByteBuffer.wrap(buf, 0, n - (n % evSize)).order(ByteOrder.LITTLE_ENDIAN);
+                    while (bb.remaining() >= evSize) {
+                        bb.position(bb.position() + (evSize - 8));
+                        int type = bb.getShort() & 0xFFFF;
+                        int code = bb.getShort() & 0xFFFF;
+                        int value = bb.getInt();
+                        if (type != EV_ABS) continue;
+                        if (code == ABS_MT_SLOT) {
+                            if (value >= 0 && value < active.length) {
+                                curSlot = value;
+                                if (value != ghostSlot) lastRealSlot = value;
                             }
-                            pendingLen = 0;
-                        }
-                    }
-
-                    int whole = ((n - off) / evSize) * evSize;
-                    if (whole > 0) {
-                        ByteBuffer bb = ByteBuffer.wrap(buf, off, whole).order(ByteOrder.LITTLE_ENDIAN);
-                        while (bb.remaining() >= evSize) {
-                            bb.position(bb.position() + (evSize - 8));
-                            int type = bb.getShort() & 0xFFFF;
-                            int code = bb.getShort() & 0xFFFF;
-                            int value = bb.getInt();
-                            if (type != EV_ABS) continue;
-                            if (code == ABS_MT_SLOT) {
-                                if (value >= 0 && value < active.length) {
-                                    curSlot = value;
-                                    if (value != ghostSlot) lastRealSlot = value;
-                                }
-                            } else if (code == ABS_MT_TRACKING_ID) {
-                                int s = curSlot;
-                                synchronized (active) {
-                                    if (s >= 0 && s < active.length) active[s] = value != -1;
-                                }
+                        } else if (code == ABS_MT_TRACKING_ID) {
+                            int s = curSlot;
+                            synchronized (active) {
+                                if (s >= 0 && s < active.length) active[s] = value != -1;
                             }
                         }
-                        off += whole;
-                    }
-
-                    int remain = n - off;
-                    if (remain > 0) {
-                        System.arraycopy(buf, off, pending, 0, remain);
-                        pendingLen = remain;
                     }
                 }
             } catch (Throwable t) {
@@ -399,29 +352,30 @@ public final class GhostTouch implements Toucher {
         }
     }
 
-    // ------------------------------------------------------------------ TIẾP QUẢN NGÓN THẬT (khi không ghi được /dev/input)
+    // ------------------------------------------------------------------ RELAY HỢP NHẤT (khi không ghi được /dev/input)
 
     /**
-     * Dùng khi máy không cho ghi vào /dev/input (EACCES) nhưng vẫn cho ĐỌC.
+     * Dùng khi máy không cho GHI vào /dev/input (EACCES, vd. Samsung) nhưng vẫn cho ĐỌC.
      *
-     * Android không cho 2 "thiết bị chạm" cùng lúc: cú chạm bơm vào sẽ HUỶ ngón thật. Nên ta đọc toạ độ ngón thật
-     * từ /dev/input rồi BƠM LẠI chính ngón thật cùng với ngón macro thành MỘT luồng đa chạm nhất quán.
+     * Gốc của lỗi "khựng / mất ngón": cú chạm macro bơm vào là một NGUỒN CHẠM THỨ 2 bên cạnh màn hình cảm ứng thật,
+     * nên Android huỷ ngón thật, hoặc game nhận trùng 2 luồng (thật + bản sao) -> giật khi kéo camera.
      *
-     * Hai chế độ:
-     *  - "sớm" (pre = true, mặc định khi bật): luồng bơm bắt đầu NGAY khi ngón thật vừa chạm xuống (lúc đó game mới
-     *    nhận vài ms, chưa kịp kéo camera) -> cú huỷ+chạm lại gần như vô hình, và về sau macro bấm bao nhiêu cũng
-     *    KHÔNG còn bị khựng giữa chừng.
-     *  - "khi cần" (pre = false): chỉ tiếp quản ở cú chạm macro đầu tiên lúc tay đang đặt (có thể khựng 1 nhịp).
-     *
-     * Tối ưu: gộp các khung evdev đã chờ sẵn thành 1 lần bơm (không dồn hàng đợi -> không trễ tích luỹ), id con trỏ
-     * luôn nhỏ nhất có thể (game hay giới hạn ~10 id), mảng bơm dùng lại (ít rác), luồng đọc ưu tiên cao.
+     * Cách xử lý: CHỈ CÒN MỘT NGUỒN.
+     *  1. Đọc toạ độ ngón thật từ /dev/input.
+     *  2. EVIOCGRAB: giành độc quyền thiết bị cảm ứng -> hệ thống không còn nhận cú chạm phần cứng nữa.
+     *  3. Tự bơm LẠI toàn bộ (ngón thật + ngón macro) thành MỘT luồng đa chạm duy nhất.
+     *     Ngón thật và ngón macro nằm chung 1 luồng nên không còn huỷ / ghi đè / trùng nhau.
+     *  Chỉ đổi trạng thái grab khi KHÔNG có ngón nào đang đặt (tránh kẹt cảm ứng). Tiến trình chết / lỗi bơm
+     *  liên tục -> tự nhả grab (đóng fd) để cảm ứng về lại bình thường.
+     *  Nếu máy không cho EVIOCGRAB thì lùi về kiểu cũ: bơm bản sao ngón thật (có thể còn hơi khựng).
      */
     static final class Takeover implements Toucher, Runnable {
         static final int GHOST = -1; // "khoá" của ngón macro (ngón thật dùng khoá = số slot)
         static final int A_DOWN = 0, A_UP = 1, A_MOVE = 2, A_PDOWN = 5, A_PUP = 6;
+        static final int EVIOCGRAB = 0x40044590; // _IOW('E', 0x90, int)
 
         private final Dev dev;
-        private final InputStream in;
+        private final String path;
         private final Injector inj;
         private final int evSize;
         private final int nSlots;
@@ -439,12 +393,19 @@ public final class GhostTouch implements Toucher {
         private final int[] keys = new int[32], pids = new int[32], tids = new int[32];
         private final float[] xs = new float[32], ys = new float[32];
         private int n = 0;
+
+        private FileInputStream curIn = null;
+        private boolean grabbed = false;
+        private boolean wantGrab = false;
+        private boolean grabBroken = false;
+        private int injFail = 0;
+
         volatile boolean alive = true;
         volatile String lastError = "";
 
-        Takeover(Dev dev, InputStream in, Injector inj, boolean is64) {
+        Takeover(Dev dev, String path, Injector inj, boolean is64) {
             this.dev = dev;
-            this.in = in;
+            this.path = path;
             this.inj = inj;
             this.evSize = is64 ? 24 : 16;
             this.nSlots = Math.max(2, Math.min(31, dev.slot.max + 1));
@@ -456,16 +417,82 @@ public final class GhostTouch implements Toucher {
             tid = new int[nSlots];
         }
 
-        // ---- cấu hình từ app
+        // ---- cấu hình từ app: early = đang ở chế độ chạy macro (giành cảm ứng + bơm hợp nhất)
         @Override
         public void config(boolean early, int rot, int w, int h) {
             synchronized (lock) {
                 this.pre = early;
+                this.wantGrab = early;
                 this.rot = rot;
                 this.w = Math.max(1, w);
                 this.h = Math.max(1, h);
                 dirty = true;
                 flushLocked();
+                serviceGrabLocked();
+            }
+        }
+
+        void shutdown() {
+            alive = false;
+            synchronized (lock) {
+                try {
+                    while (n > 0) removeAt(n - 1);
+                } catch (Throwable ignored) {
+                }
+                n = 0;
+                started = false;
+            }
+        }
+
+        // ---- grab / nhả grab (chỉ khi KHÔNG có ngón nào đang đặt)
+        private boolean idleLocked() {
+            return !started && n == 0 && !anyReal();
+        }
+
+        private void serviceGrabLocked() {
+            if (wantGrab && !grabbed && !grabBroken) {
+                if (curIn == null || !idleLocked()) return;
+                try {
+                    grabFd(curIn.getFD());
+                    grabbed = true;
+                    injFail = 0;
+                    report("GRAB 1");
+                } catch (Throwable t) {
+                    grabBroken = true;
+                    report("GRAB 0 " + String.valueOf(t.getMessage() != null ? t.getMessage() : t));
+                }
+            } else if (!wantGrab && grabbed) {
+                if (!idleLocked()) return; // nhả khi nhấc hết tay
+                releaseLocked("GRAB 0 đã nhả");
+            }
+        }
+
+        /** Nhả grab bằng cách đóng fd (kernel tự nhả); luồng đọc sẽ mở lại fd mới không grab. */
+        private void releaseLocked(String why) {
+            grabbed = false;
+            FileInputStream f = curIn;
+            if (f != null) {
+                try {
+                    f.close();
+                } catch (Throwable ignored) {
+                }
+            }
+            report(why);
+        }
+
+        private void resetStateLocked() {
+            try {
+                while (n > 0) removeAt(n - 1);
+            } catch (Throwable ignored) {
+            }
+            n = 0;
+            started = false;
+            dirty = false;
+            cur = 0;
+            for (int i = 0; i < nSlots; i++) {
+                act[i] = false;
+                hasX[i] = false;
+                hasY[i] = false;
             }
         }
 
@@ -476,38 +503,29 @@ public final class GhostTouch implements Toucher {
                 android.os.Process.setThreadPriority(-8); // URGENT_DISPLAY: bơm kịp nhịp cảm ứng
             } catch (Throwable ignored) {
             }
-            try {
-                byte[] buf = new byte[evSize * 128];
-                byte[] pending = new byte[evSize];
-                int pendingLen = 0;
-                while (true) {
-                    int len = in.read(buf);
-                    if (len <= 0) break;
-
-                    int off = 0;
-                    // Preserve partial input_event records across reads. Dropping the
-                    // remainder can lose ABS_MT_SLOT/TRACKING_ID/POSITION events and
-                    // is enough to make a real finger appear to "randomly" disappear.
-                    if (pendingLen != 0) {
-                        int need = evSize - pendingLen;
-                        int take = Math.min(need, len);
-                        System.arraycopy(buf, 0, pending, pendingLen, take);
-                        pendingLen += take;
-                        off += take;
-                        if (pendingLen == evSize) {
-                            ByteBuffer one = ByteBuffer.wrap(pending).order(ByteOrder.LITTLE_ENDIAN);
-                            one.position(evSize - 8);
-                            int type = one.getShort() & 0xFFFF;
-                            int code = one.getShort() & 0xFFFF;
-                            int value = one.getInt();
-                            feed(type, code, value);
-                            pendingLen = 0;
-                        }
+            byte[] buf = new byte[evSize * 128];
+            while (alive) {
+                FileInputStream fin;
+                try {
+                    fin = new FileInputStream(path);
+                } catch (Throwable t) {
+                    lastError = String.valueOf(t);
+                    try {
+                        Thread.sleep(500);
+                    } catch (InterruptedException ignored) {
                     }
-
-                    int whole = ((len - off) / evSize) * evSize;
-                    if (whole > 0) {
-                        ByteBuffer bb = ByteBuffer.wrap(buf, off, whole).order(ByteOrder.LITTLE_ENDIAN);
+                    continue;
+                }
+                synchronized (lock) {
+                    curIn = fin;
+                    resetStateLocked();
+                    serviceGrabLocked();
+                }
+                try {
+                    while (true) {
+                        int len = fin.read(buf);
+                        if (len <= 0) break;
+                        ByteBuffer bb = ByteBuffer.wrap(buf, 0, len - (len % evSize)).order(ByteOrder.LITTLE_ENDIAN);
                         while (bb.remaining() >= evSize) {
                             bb.position(bb.position() + (evSize - 8));
                             int type = bb.getShort() & 0xFFFF;
@@ -515,26 +533,31 @@ public final class GhostTouch implements Toucher {
                             int value = bb.getInt();
                             feed(type, code, value);
                         }
-                        off += whole;
+                        flush(); // gộp mọi khung đã đọc được thành 1 lần bơm (trạng thái mới nhất)
                     }
-
-                    int remain = len - off;
-                    if (remain > 0) {
-                        System.arraycopy(buf, off, pending, 0, remain);
-                        pendingLen = remain;
-                    }
-
-                    flush(); // gộp mọi khung đã đọc được thành 1 lần bơm
+                } catch (Throwable t) {
+                    lastError = String.valueOf(t);
                 }
-            } catch (Throwable t) {
-                lastError = String.valueOf(t);
+                synchronized (lock) {
+                    if (curIn == fin) curIn = null;
+                    grabbed = false; // đóng fd = kernel tự nhả grab
+                    resetStateLocked();
+                }
+                try {
+                    fin.close();
+                } catch (Throwable ignored) {
+                }
+                try {
+                    Thread.sleep(20);
+                } catch (InterruptedException ignored) {
+                }
             }
-            alive = false;
         }
 
         void flush() {
             synchronized (lock) {
                 if (dirty) flushLocked();
+                serviceGrabLocked();
             }
         }
 
@@ -579,7 +602,22 @@ public final class GhostTouch implements Toucher {
                     syncLocked();
                 }
             } catch (Throwable t) {
-                lastError = String.valueOf(t);
+                onInjectFailLocked(t);
+            }
+        }
+
+        /** Bơm lỗi: bỏ luồng dở; nếu đang grab mà lỗi liên tục thì NHẢ NGAY để cảm ứng không bị chết. */
+        private void onInjectFailLocked(Throwable t) {
+            lastError = String.valueOf(t);
+            n = 0;
+            started = false;
+            if (grabbed) {
+                injFail++;
+                if (injFail >= 3) {
+                    grabBroken = true;
+                    wantGrab = false;
+                    releaseLocked("GRAB 0 bơm lỗi: " + lastError);
+                }
             }
         }
 
@@ -623,6 +661,7 @@ public final class GhostTouch implements Toucher {
 
         private void emit(int action) throws Exception {
             inj.inject(action, n, pids, xs, ys, downTime);
+            injFail = 0;
         }
 
         private void addPointer(int key, float x, float y) throws Exception {
@@ -687,25 +726,95 @@ public final class GhostTouch implements Toucher {
                 this.rot = rot;
                 this.w = Math.max(1, w);
                 this.h = Math.max(1, h);
-                if (!started) {
-                    started = true;
-                    addAllReal(); // đang có ngón thật -> chép vào luồng bơm (chế độ "khi cần")
+                try {
+                    if (!started) {
+                        started = true;
+                        addAllReal(); // đang có ngón thật -> chép vào luồng bơm
+                    }
+                    int gi = indexOfKey(GHOST);
+                    if (gi >= 0) removeAt(gi);
+                    addPointer(GHOST, x, y);
+                } catch (Throwable t) {
+                    onInjectFailLocked(t);
+                    throw new Exception(t);
                 }
-                int gi = indexOfKey(GHOST);
-                if (gi >= 0) removeAt(gi);
-                addPointer(GHOST, x, y);
             }
             try {
                 Thread.sleep(Math.max(8, holdMs));
             } finally {
                 synchronized (lock) {
-                    int gi = indexOfKey(GHOST);
-                    if (gi >= 0) removeAt(gi);
-                    if (n == 0) started = false;
-                    else syncLocked();
+                    try {
+                        int gi = indexOfKey(GHOST);
+                        if (gi >= 0) removeAt(gi);
+                        if (n == 0) started = false;
+                        else syncLocked();
+                    } catch (Throwable t) {
+                        onInjectFailLocked(t);
+                    }
                 }
             }
         }
+    }
+
+    // ------------------------------------------------------------------ ioctl EVIOCGRAB (giành độc quyền cảm ứng)
+
+    /** Gọi EVIOCGRAB qua android.system.Os.ioctlInt / libcore Os (reflection). Ném lỗi nếu máy không cho. */
+    static void grabFd(java.io.FileDescriptor fd) throws Exception {
+        Throwable last = null;
+        Object[] holders = new Object[2];
+        Class<?>[] classes = new Class<?>[2];
+        try {
+            classes[0] = Class.forName("android.system.Os");
+        } catch (Throwable t) {
+            last = t;
+        }
+        try {
+            Class<?> lc = Class.forName("libcore.io.Libcore");
+            Object osObj = lc.getField("os").get(null);
+            holders[1] = osObj;
+            classes[1] = osObj.getClass();
+        } catch (Throwable t) {
+            if (last == null) last = t;
+        }
+        for (int k = 0; k < 2; k++) {
+            if (classes[k] == null) continue;
+            java.lang.reflect.Method[] ms;
+            try {
+                ms = classes[k].getMethods();
+            } catch (Throwable t) {
+                last = t;
+                continue;
+            }
+            for (java.lang.reflect.Method m : ms) {
+                if (!m.getName().equals("ioctlInt")) continue;
+                Class<?>[] pt = m.getParameterTypes();
+                try {
+                    m.setAccessible(true);
+                    if (pt.length == 2) {
+                        m.invoke(holders[k], fd, EVIOCGRAB_CMD);
+                        return;
+                    } else if (pt.length == 3) {
+                        Object ref = pt[2].getConstructor(int.class).newInstance(1);
+                        m.invoke(holders[k], fd, EVIOCGRAB_CMD, ref);
+                        return;
+                    }
+                } catch (java.lang.reflect.InvocationTargetException ite) {
+                    last = ite.getCause() != null ? ite.getCause() : ite;
+                } catch (Throwable t) {
+                    last = t;
+                }
+            }
+        }
+        throw new Exception(last == null ? "không có ioctlInt" : String.valueOf(last));
+    }
+
+    static final int EVIOCGRAB_CMD = 0x40044590;
+
+    static volatile PrintStream SO = null;
+
+    static void report(String s) {
+        PrintStream p = SO;
+        if (p != null) p.println(s);
     }
 
     // ------------------------------------------------------------------ bộ chạm
@@ -789,6 +898,7 @@ public final class GhostTouch implements Toucher {
 
     public static void main(String[] args) {
         PrintStream so = new PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), true);
+        SO = so;
         Toucher g;
         try {
             Dev d = pickTouchscreen(parseProps(runGetevent()));
@@ -812,12 +922,18 @@ public final class GhostTouch implements Toucher {
             if (direct == null) {
                 // Không ghi được /dev/input -> tiếp quản ngón thật (đọc /dev/input + bơm MotionEvent)
                 try {
-                    InputStream rin = new FileInputStream(d.path);
+                    new FileInputStream(d.path).close(); // đọc được không?
                     Injector inj = new ReflectInjector();
-                    Takeover tk = new Takeover(d, rin, inj, is64());
+                    final Takeover tk = new Takeover(d, d.path, inj, is64());
                     Thread t = new Thread(tk, "takeover-reader");
                     t.setDaemon(true);
                     t.start();
+                    Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
+                        @Override
+                        public void run() {
+                            tk.shutdown(); // nhả mọi ngón đang bơm dở khi tiến trình thoát
+                        }
+                    }));
                     direct = tk;
                     so.println("READY " + d.path + " " + (d.x.max + 1) + " " + (d.y.max + 1) + " 0 TAKEOVER");
                 } catch (Throwable t2) {
