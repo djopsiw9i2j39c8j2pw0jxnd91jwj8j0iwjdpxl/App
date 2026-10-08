@@ -177,7 +177,8 @@ class MacroService : AccessibilityService() {
     private fun dp(v: Number): Int = (v.toFloat() * density + 0.5f).toInt()
 
     private fun screenSize(): Pair<Int, Int> {
-        try {
+        // Chế độ Trợ năng giữ NGUYÊN cách lấy kích thước của bản cũ; chỉ Gỡ lỗi WiFi mới dùng getRealMetrics của Display.
+        if (Store.tapMode(this) == TAP_ADB) try {
             val dmg = getSystemService(Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
             val d = dmg.getDisplay(android.view.Display.DEFAULT_DISPLAY)
             if (d != null) {
@@ -213,9 +214,10 @@ class MacroService : AccessibilityService() {
         // -> không xoay được camera / bấm được nút khác của game.
         var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_SPLIT_TOUCH or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        // CHỈ bật ở chế độ Gỡ lỗi WiFi. Chế độ Trợ năng (dispatchGesture) phải giữ cờ y như bản cũ.
+        if (Store.tapMode(this) == TAP_ADB) flags = flags or WindowManager.LayoutParams.FLAG_SPLIT_TOUCH
         if (!touchable) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         val lp = WindowManager.LayoutParams(
             w, h,
@@ -330,6 +332,21 @@ class MacroService : AccessibilityService() {
             storePos(b, land)
         }
         lastLand = land
+    }
+
+    /** Đổi chế độ chạm xong thì cập nhật cờ cửa sổ của các nút đang hiện (SPLIT_TOUCH chỉ dành cho Gỡ lỗi WiFi). */
+    fun applyTapModeFlags() {
+        val adb = Store.tapMode(this) == TAP_ADB
+        for ((v, lp) in live.toList()) {
+            val had = (lp.flags and WindowManager.LayoutParams.FLAG_SPLIT_TOUCH) != 0
+            if (had == adb) continue
+            lp.flags = if (adb) lp.flags or WindowManager.LayoutParams.FLAG_SPLIT_TOUCH
+            else lp.flags and WindowManager.LayoutParams.FLAG_SPLIT_TOUCH.inv()
+            try {
+                if (v.isAttachedToWindow) wm.updateViewLayout(v, lp)
+            } catch (_: Exception) {
+            }
+        }
     }
 
     private fun persist() {
@@ -462,7 +479,8 @@ class MacroService : AccessibilityService() {
                 val bv = view as BtnView
                 when (e.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
-                        val replay = held && SystemClock.uptimeMillis() - cancelAt < 400L
+                        val replay = held && Store.tapMode(this) == TAP_ADB &&
+                                SystemClock.uptimeMillis() - cancelAt < 400L
                         held = true
                         if (replay) return@setOnTouchListener true
                         bv.pressedFx = true
@@ -742,6 +760,7 @@ class MacroService : AccessibilityService() {
         Store.setTapMode(this, m)
         cancelChain()
         if (m == TAP_ADB) AdbClient.connect(applicationContext) else AdbClient.disconnect()
+        applyTapModeFlags()
         syncArm()
         refreshPanel()
     }

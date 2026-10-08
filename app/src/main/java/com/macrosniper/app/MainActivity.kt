@@ -366,6 +366,7 @@ class MainActivity : Activity() {
     private fun setTapModeUi(m: Int) {
         Store.setTapMode(this, m)
         if (m == TAP_ADB) AdbClient.connect(applicationContext) else AdbClient.disconnect()
+        MacroService.instance?.applyTapModeFlags()
         refreshMode()
     }
 
