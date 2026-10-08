@@ -14,31 +14,18 @@ App macro chạm màn hình với nút nổi (Android 7.0+).
 4. Nút main có 3 kiểu kích hoạt: **Khi ấn**, **Khi thả**, **Giữ lặp** (giữ tay thì chuỗi lặp lại liên tục, thả tay là dừng).
 5. Bấm ✕ để khóa nút. Bấm `main1` -> app tự chạm 1 -> 2 -> 3... theo tốc độ đã cài.
 
-## Chế độ chạm
-- **Trợ năng**: dùng dịch vụ Trợ năng để chạm (mặc định, chạy mọi máy Android 7+).
-- **Gỡ lỗi WiFi** (Android 11+): app tự làm máy khách ADB qua *Gỡ lỗi không dây*, chạm bằng lệnh `input tap` với quyền shell. Không cần Shizuku hay app ngoài.
-  - Ghép cặp 1 lần: Tùy chọn nhà phát triển → Gỡ lỗi không dây → bật, bấm BẮT ĐẦU, chạm bong bóng → *Chế độ chạm* → *Gỡ lỗi WiFi* → *Ghép cặp*, rồi nhập cổng + mã 6 số từ hộp thoại "Ghép nối thiết bị bằng mã".
-  - Cần đang kết nối Wi-Fi (không cần có internet). Mất Wi-Fi thì đổi về **Trợ năng** ngay trên bảng nổi hoặc ở màn hình chính để dùng tạm; có Wi-Fi lại thì chọn **Gỡ lỗi WiFi**, app tự nối lại.
+## Chế độ chạm (chọn tay ở màn hình đầu hoặc trên bảng nổi: Trợ năng / Gỡ lỗi WiFi)
+Ghép cặp Gỡ lỗi không dây 1 lần (Android 11+): Tùy chọn nhà phát triển → Gỡ lỗi không dây → bật → mở app, nhập mã 6 số. Sau đó app tự kết nối mỗi khi bấm BẮT ĐẦU.
 
-## Ngón tay phụ (sửa lỗi kẹt ngón khi dùng Gỡ lỗi WiFi)
-Trước đây lệnh `input tap` bị Android coi là một "thiết bị chạm khác" nên mỗi lần macro bấm là **huỷ cử chỉ của ngón thật** (đang xoay camera / bấm nút khác bị kẹt). Bản này sửa 2 chỗ:
-1. **FLAG_SPLIT_TOUCH** cho mọi cửa sổ nổi: 1 ngón đè nút main, ngón khác vẫn chạm được vào game (xoay cam, bấm nút khác).
-2. **GhostTouch** (`GhostTouch.java`): khi kết nối Gỡ lỗi WiFi, app chạy thêm 1 tiến trình quyền shell, ghi thẳng sự kiện đa chạm vào `/dev/input/eventX` của màn hình cảm ứng bằng 1 slot riêng -> Android thấy đó là thêm 1 ngón tay thật, ngón gốc không bị đụng tới.
-   - Trạng thái hiện trên bảng nổi / màn hình chính: `ngón tay phụ (không chặn ngón thật)` = đang dùng; `chạm bằng input tap · <lý do>` = máy không cho ghi `/dev/input` nên tự lùi về cách cũ.
-   - Nếu máy không hỗ trợ ngón phụ: dùng chế độ **Trợ năng**.
+### Engine chạm mới (GhostTouch.java) — thứ tự ưu tiên
+1. **Ghi thẳng /dev/input** (app tự dò màn hình cảm ứng bằng `getevent -lp`): macro là 1 ngón thật nữa trên cùng thiết bị → không xung đột. Chỉ chạy được nếu máy cho ghi.
+2. **Relay hợp nhất** (máy chặn ghi, vd. Samsung): đọc ngón thật từ /dev/input, `EVIOCGRAB` giành độc quyền cảm ứng, rồi tự bơm LẠI ngón thật + ngón macro thành **một luồng duy nhất**. Hệ thống chỉ còn 1 nguồn chạm nên không huỷ ngón thật, không bị trùng 2 luồng (nguyên nhân khựng khi xoay camera). Chỉ đổi trạng thái grab khi không có ngón nào đặt; tiến trình chết / bơm lỗi 3 lần liên tiếp thì tự nhả. Trạng thái: `chạm hợp nhất (1 luồng…)`.
+3. Nếu máy cấm `EVIOCGRAB`: lùi về bơm bản sao ngón thật (có thể còn hơi khựng) — bảng nổi hiện lý do.
 
-### Chế độ "tiếp quản ngón thật" (máy chặn ghi /dev/input — lỗi `open failed: EACCES`)
-Nhiều máy (vd. Samsung) không cho ghi `/dev/input/eventX` nhưng vẫn cho **đọc**. Khi đó app tự chuyển sang tiếp quản:
-- App đọc toạ độ ngón thật từ `/dev/input` (đọc thì được phép).
-- Khi macro cần chạm, app bơm lại **cả ngón thật lẫn ngón macro** thành MỘT luồng đa chạm nhất quán (qua `injectInputEvent` với quyền shell). Ngón thật vẫn xoay camera / bấm nút khác bình thường, ngón macro là con trỏ thêm.
-- Mọi ngón thật nhấc lên thì app nhả luồng, trả lại cho hệ thống.
-- Trạng thái hiện: `tiếp quản ngón thật (vừa chỉnh cam vừa macro)`.
-- Game có thể thấy 1 lần "huỷ cử chỉ" lúc macro chạm đầu tiên khi tay đang đặt, rồi ngón được nuôi tiếp ngay tại chỗ (camera không rơi). Nút main đang giữ (Giữ lặp) đã được xử lý để không bị ngắt vì cú huỷ này.
-
-### Chống khựng: "Tiếp quản sớm" (mặc định bật)
-- Luồng bơm bắt đầu ngay khi ngón thật vừa chạm xuống (lúc game chưa kịp kéo camera), nên macro bấm bao nhiêu cũng không còn bị "kẹt 1 tý" giữa chừng.
-- Gộp các khung cảm ứng chờ sẵn thành 1 lần bơm (không dồn hàng đợi), id con trỏ luôn nhỏ nhất có thể, luồng đọc ưu tiên cao.
-- Công tắc trên bảng nổi → *Chế độ chạm* → **Mượt hơn**: `Tiếp quản sớm` (mặc định) hoặc `Khi macro chạm` (chỉ tiếp quản lúc macro bấm, như bản trước).
+Toạ độ dùng kích thước THẬT của màn hình (`Display.getRealMetrics`) để nút bấm trúng tâm.
 
 ## Tên tuỳ chỉnh cho nút
 Chạm nút ở chế độ setup → ô **Tên nút** (tối đa 16 ký tự). Để trống = hiện số / `mainN`. Chữ tự co nhỏ, xuống 2 dòng (nếu có dấu cách) hoặc cắt "…" để luôn nằm gọn trong nút. Tên được lưu cùng macro.
+
+## Xoay màn hình
+Vị trí nút + bong bóng được nhớ RIÊNG cho hướng dọc và hướng ngang. Hướng chưa từng đặt thì tự suy ra theo tỉ lệ từ hướng kia, kéo đi đâu thì nhớ đó; xoay qua lại không còn bị kẹt vị trí của hướng cũ.
