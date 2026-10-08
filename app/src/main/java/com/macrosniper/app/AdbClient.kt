@@ -321,6 +321,14 @@ object AdbClient {
                 lastError = ""
                 state = State.CONNECTED
                 notifyUi()
+                // Tự xin quyền WRITE_SECURE_SETTINGS (1 lần) để sau này app tự bật lại Gỡ lỗi không dây khi bị tắt.
+                try {
+                    if (!hasSecure(app)) {
+                        outs.write("pm grant ${app.packageName} android.permission.WRITE_SECURE_SETTINGS\n".toByteArray())
+                        outs.flush()
+                    }
+                } catch (_: Throwable) {
+                }
                 val t = Thread { readLoop(st, ins) }
                 t.isDaemon = true
                 t.start()
@@ -430,7 +438,62 @@ object AdbClient {
 
     /** Gọi định kỳ: rớt mạng rồi có lại thì tự nối lại (nếu người dùng đang muốn dùng ADB). */
     fun tick(ctx: Context) {
-        if (wantUp && state == State.OFF && SystemClock.uptimeMillis() - lastTry > 15_000L) connect(ctx)
+        if (wantUp && state == State.OFF && SystemClock.uptimeMillis() - lastTry > 15_000L) {
+            val app = ctx.applicationContext
+            if (supported() && hasSecure(app) && !wifiAdbOn(app) && wifiUp(app)) {
+                // Gỡ lỗi không dây bị hệ thống tắt (mất Wi-Fi) mà giờ Wi-Fi đã có lại -> tự bật lại
+                lastTry = SystemClock.uptimeMillis()
+                try {
+                    android.provider.Settings.Global.putInt(app.contentResolver, "adb_wifi_enabled", 1)
+                } catch (_: Throwable) {
+                }
+                ui.postDelayed({ connect(app) }, 2500L)
+            } else {
+                connect(ctx)
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ bật lại Gỡ lỗi không dây
+
+    fun hasSecure(ctx: Context): Boolean =
+        ctx.checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    private fun wifiAdbOn(ctx: Context): Boolean = try {
+        android.provider.Settings.Global.getInt(ctx.contentResolver, "adb_wifi_enabled", 0) == 1
+    } catch (_: Throwable) {
+        false
+    }
+
+    /** Có Wi-Fi đang nối không (không cần có internet). */
+    @Suppress("DEPRECATION")
+    private fun wifiUp(ctx: Context): Boolean = try {
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        cm.allNetworks.any {
+            cm.getNetworkCapabilities(it)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true
+        }
+    } catch (_: Throwable) {
+        false
+    }
+
+    /** Bấm nút "Bật lại Gỡ lỗi WiFi": bật cài đặt hệ thống rồi tự kết nối lại. Trả về lời nhắn để hiện cho người dùng. */
+    fun reEnable(ctx: Context): String {
+        val app = ctx.applicationContext
+        if (!supported()) return "Cần Android 11 trở lên"
+        if (state == State.CONNECTED) return "Đã kết nối rồi"
+        if (!hasSecure(app)) {
+            return "Chưa có quyền tự bật · kết nối Gỡ lỗi WiFi 1 lần (app tự cấp quyền), hoặc bật tay trong Tùy chọn nhà phát triển"
+        }
+        if (!wifiUp(app)) return "Chưa có Wi-Fi · hãy nối Wi-Fi (không cần có internet) rồi bấm lại"
+        try {
+            android.provider.Settings.Global.putInt(app.contentResolver, "adb_wifi_enabled", 1)
+        } catch (t: Throwable) {
+            return "Không bật được: " + (t.message ?: t.javaClass.simpleName).take(60)
+        }
+        wantUp = true
+        ui.postDelayed({ connect(app) }, 2500L)
+        return "Đã bật Gỡ lỗi không dây · đang kết nối lại…"
     }
 
     // ------------------------------------------------------------------ ngón tay phụ (GhostTouch)

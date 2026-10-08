@@ -191,6 +191,17 @@ class MainActivity : Activity() {
         ar.addView(cb, bl1)
         ar.addView(db, bl2)
         adbBox.addView(ar)
+        val rb = text("Bật lại Gỡ lỗi WiFi (khi mất mạng bị tắt)", 13f, Theme.ACCENT, true)
+        rb.gravity = Gravity.CENTER
+        rb.background = roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.STROKE, dp(1))
+        rb.isClickable = true
+        pressFx(rb)
+        rb.setOnClickListener {
+            Toast.makeText(this, AdbClient.reEnable(applicationContext), Toast.LENGTH_LONG).show()
+        }
+        val rbl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40))
+        rbl.topMargin = dp(8)
+        adbBox.addView(rb, rbl)
         val an = text(
             "Cần Android 11+. Ghép cặp (làm 1 lần): vào Tùy chọn nhà phát triển → Gỡ lỗi không dây → " +
                     "\"Ghép nối thiết bị bằng mã\" và để hộp thoại đó MỞ. Chỉ cần nhập MÃ 6 số, app tự tìm cổng. " +
