@@ -73,6 +73,7 @@ class MacroService : AccessibilityService() {
     private var nameDraft = ""
     private var listOpen = false
     private var addTargetMain = 0 // main đang được chọn để thêm nút số vào
+    private var builtTapMode = -1 // chế độ chạm lúc dựng overlay (cờ cửa sổ phụ thuộc vào nó)
     private var pairOpen = false
     private var pairCode = ""
     private var lastAdbWarn = 0L
@@ -94,6 +95,8 @@ class MacroService : AccessibilityService() {
                         // đề phòng hệ thống không báo xoay màn hình: tự dựng lại khi đổi hướng
                         val ll = lastLand
                         if (ll != null && ll != isLand()) rebuildAll()
+                        // đổi chế độ chạm (từ app chính hoặc bảng nổi) -> dựng lại để áp đúng cờ cửa sổ
+                        else if (builtTapMode != Store.tapMode(this@MacroService)) rebuildAll()
                     }
                     if (Store.tapMode(this@MacroService) == TAP_ADB) AdbClient.tick(applicationContext)
                 }
@@ -213,9 +216,10 @@ class MacroService : AccessibilityService() {
         // -> không xoay được camera / bấm được nút khác của game.
         var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_SPLIT_TOUCH or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        // Chế độ Trợ năng: giữ cờ y như bản cũ (đã chạy tốt). Chỉ chế độ ADB mới cần tách cảm ứng.
+        if (Store.tapMode(this) == TAP_ADB) flags = flags or WindowManager.LayoutParams.FLAG_SPLIT_TOUCH
         if (!touchable) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         val lp = WindowManager.LayoutParams(
             w, h,
@@ -389,6 +393,7 @@ class MacroService : AccessibilityService() {
 
     private fun rebuildAll() {
         removeAll()
+        builtTapMode = Store.tapMode(this)
         syncArm()
         if (mode == Mode.OFF) return
         val (sw, sh) = screenSize()
@@ -1408,19 +1413,18 @@ class MacroService : AccessibilityService() {
                 Math.round(loc[1] + v.height / 2f),
                 displayRotation(), sw, sh
             ) { handler.post { finish() } }
-            v.flashFx()
-            if (!ok) {
-                cancelChain()
-                val now = SystemClock.uptimeMillis()
-                if (now - lastAdbWarn > 3000) {
-                    lastAdbWarn = now
-                    toast("Gỡ lỗi WiFi chưa kết nối · chạm bong bóng, đổi sang chế độ Trợ năng để dùng tạm")
-                }
-            } else {
+            if (ok) {
+                v.flashFx()
                 // đề phòng shell không báo lại: tự đi tiếp sau 1,5 giây
                 handler.postAtTime({ finish() }, chainToken, SystemClock.uptimeMillis() + 1500)
+                return
             }
-            return
+            // ADB chưa kết nối: KHÔNG im lặng nữa -> báo 1 lần và chạm tạm bằng Trợ năng (chạy tiếp xuống dưới)
+            val now = SystemClock.uptimeMillis()
+            if (now - lastAdbWarn > 3000) {
+                lastAdbWarn = now
+                toast("Gỡ lỗi WiFi chưa kết nối · đang chạm tạm bằng Trợ năng")
+            }
         }
 
         val path = Path()
