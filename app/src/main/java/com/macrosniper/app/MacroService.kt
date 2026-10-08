@@ -1423,30 +1423,64 @@ class MacroService : AccessibilityService() {
             return
         }
 
-        val path = Path()
-        path.moveTo(loc[0] + v.width / 2f, loc[1] + v.height / 2f)
-        val stroke = GestureDescription.StrokeDescription(path, 0L, 10L)
-        val gesture = GestureDescription.Builder().addStroke(stroke).build()
-        val cb = object : AccessibilityService.GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) {
+        // Chế độ Trợ năng.
+        // LỖI CŨ: khi ngón thật đang đè nút main, Android (MotionEventInjector) HUỶ mọi cử chỉ giả
+        // ngay khi có bất kỳ sự kiện cảm ứng thật nào (kể cả rung nhẹ của ngón đang đè). Code cũ gọi
+        // finish() ngay trong onCancelled -> chuỗi nhảy sang nút kế tiếp mà KHÔNG hề chạm được -> trông
+        // như "không click". SỬA: bị huỷ thì bắn lại liên tục tới khi lọt được vào khe giữa 2 sự kiện thật.
+        val cx = loc[0] + v.width / 2f
+        val cy = loc[1] + v.height / 2f
+        val gen = chainGen
+        val deadline = SystemClock.uptimeMillis() + 900L
+        var attemptNo = 0
+
+        fun attempt() {
+            if (done) return
+            if (gen != chainGen || mode != Mode.RUN) {
                 finish()
+                return
+            }
+            val my = ++attemptNo
+
+            fun retryOrFinish() {
+                if (done || my != attemptNo) return
+                val now = SystemClock.uptimeMillis()
+                if (now < deadline) {
+                    handler.postAtTime({ attempt() }, chainToken, now + 6)
+                } else {
+                    finish()
+                }
             }
 
-            override fun onCancelled(gestureDescription: GestureDescription?) {
-                finish()
+            val path = Path()
+            path.moveTo(cx, cy)
+            val stroke = GestureDescription.StrokeDescription(path, 0L, 10L)
+            val gesture = GestureDescription.Builder().addStroke(stroke).build()
+            val cb = object : AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    finish()
+                }
+
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    retryOrFinish()
+                }
+            }
+            val ok = try {
+                dispatchGesture(gesture, cb, handler)
+            } catch (_: Exception) {
+                false
+            }
+            if (!ok) {
+                retryOrFinish()
+            } else {
+                // đề phòng hệ thống không gọi callback: tự đi tiếp sau 400ms để chuỗi không bị kẹt
+                handler.postAtTime({
+                    if (!done && my == attemptNo) finish()
+                }, chainToken, SystemClock.uptimeMillis() + 400)
             }
         }
-        val ok = try {
-            dispatchGesture(gesture, cb, handler)
-        } catch (_: Exception) {
-            false
-        }
+
         v.flashFx()
-        if (!ok) {
-            finish()
-        } else {
-            // đề phòng hệ thống không gọi callback: tự đi tiếp sau 400ms để chuỗi không bị kẹt
-            handler.postAtTime({ finish() }, chainToken, SystemClock.uptimeMillis() + 400)
-        }
+        attempt()
     }
 }
