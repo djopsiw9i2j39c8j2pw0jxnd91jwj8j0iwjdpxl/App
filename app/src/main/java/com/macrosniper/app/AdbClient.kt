@@ -92,7 +92,7 @@ object AdbClient {
     private var ghostOut: OutputStream? = null
 
     /** Thời gian ngón phụ đè xuống mỗi cú chạm (ms). */
-    private const val GHOST_HOLD_MS = 25
+    private const val GHOST_HOLD_MS = 10
 
     private val ui = Handler(Looper.getMainLooper())
     private val bg = Executors.newSingleThreadExecutor() // kết nối / ghép cặp (chặn lâu)
