@@ -34,6 +34,8 @@ class MainActivity : Activity() {
     private lateinit var statusText: TextView
     private lateinit var statusSub: TextView
     private lateinit var toggleBtn: TextView
+    private lateinit var modeAcc: TextView
+    private lateinit var modeAdb: TextView
     private lateinit var adbBox: LinearLayout
     private lateinit var adbStatus: TextView
     private val adbListener: () -> Unit = { refreshMode() }
@@ -141,7 +143,28 @@ class MainActivity : Activity() {
         modeCard.orientation = LinearLayout.VERTICAL
         modeCard.setPadding(dp(16), dp(14), dp(16), dp(14))
         modeCard.background = roundedBg(Color.parseColor("#0FFFFFFF"), dp(18).toFloat(), Color.parseColor("#1FFFFFFF"), dp(1))
-        modeCard.addView(text("KẾT NỐI CHẠM · GỠ LỖI WIFI", 12f, Theme.ACCENT, true))
+        modeCard.addView(text("CHẾ ĐỘ CHẠM", 12f, Theme.ACCENT, true))
+        val seg = LinearLayout(this)
+        seg.orientation = LinearLayout.HORIZONTAL
+        modeAcc = text("Trợ năng", 13f, Theme.ACCENT, true)
+        modeAdb = text("Gỡ lỗi WiFi", 13f, Theme.ACCENT, true)
+        for (t in listOf(modeAcc, modeAdb)) {
+            t.gravity = Gravity.CENTER
+            t.isClickable = true
+            pressFx(t)
+        }
+        modeAcc.setOnClickListener { setTapModeUi(TAP_ACC) }
+        modeAdb.setOnClickListener { setTapModeUi(TAP_ADB) }
+        val sl1 = LinearLayout.LayoutParams(0, dp(44), 1f)
+        sl1.setMargins(0, 0, dp(4), 0)
+        val sl2 = LinearLayout.LayoutParams(0, dp(44), 1f)
+        sl2.setMargins(dp(4), 0, 0, 0)
+        seg.addView(modeAcc, sl1)
+        seg.addView(modeAdb, sl2)
+        val segLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        segLp.topMargin = dp(10)
+        modeCard.addView(seg, segLp)
+
         adbBox = LinearLayout(this)
         adbBox.orientation = LinearLayout.VERTICAL
         adbStatus = text("", 12f, Theme.MUTED, true)
@@ -173,7 +196,7 @@ class MainActivity : Activity() {
                     "\"Ghép nối thiết bị bằng mã\" và để hộp thoại đó MỞ. Chỉ cần nhập MÃ 6 số, app tự tìm cổng. " +
                     "Vì hộp thoại nằm ở Cài đặt, hãy bấm \"Gửi thông báo nhập mã\" rồi gõ mã ngay trong thông báo " +
                     "(hoặc dùng chia đôi màn hình để gõ ở ô dưới). " +
-                    "Chưa kết nối thì app tạm chạm bằng Trợ năng (có thể bị khựng khi vừa xoay vừa bấm).",
+                    "Mất Wi-Fi thì đổi về Trợ năng để dùng tạm.",
             11f, Theme.MUTED
         )
         an.setPadding(0, dp(10), 0, 0)
@@ -272,7 +295,7 @@ class MainActivity : Activity() {
             "2.  Quay lại đây, bấm BẮT ĐẦU. Bong bóng logo sẽ nổi trên màn hình (kéo thả được).",
             "3.  Chạm bong bóng để mở bảng setup: tạo nút trung tâm main1, rồi chọn main đó để thêm nút số 1, 2, 3... (mỗi main có số riêng: main2 → 1, 2...).",
             "4.  Kéo các nút đến đúng vị trí cần bấm, chạm vào nút để chỉnh size / độ trong (kéo về 0 là tàng hình) / tốc độ. Lúc setup nút luôn hiện tối thiểu 20%.",
-            "5.  Nút main có 3 kiểu kích hoạt: khi ấn, khi thả, hoặc giữ tay để chuỗi tự lặp lại.",
+            "5.  Nút main có 3 kiểu kích hoạt: khi ấn, khi thả, hoặc giữ tay để chuỗi tự lặp lại. Chế độ chạm (Trợ năng / Gỡ lỗi WiFi) chọn ở thẻ phía trên hoặc ngay trên bảng nổi.",
             "6.  Bấm ✕ để khóa nút. Mở game rồi bấm main1 → máy tự chạm 1 → 2 → 3... đúng tốc độ.",
             "7.  Muốn gỡ toàn bộ giao diện nổi: mở lại app này và bấm nút TẮT (cũng là nút bật ở trên)."
         )
@@ -340,8 +363,22 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun setTapModeUi(m: Int) {
+        Store.setTapMode(this, m)
+        if (m == TAP_ADB) AdbClient.connect(applicationContext) else AdbClient.disconnect()
+        refreshMode()
+    }
+
     private fun refreshMode() {
-        adbBox.visibility = View.VISIBLE
+        val adb = Store.tapMode(this) == TAP_ADB
+        fun style(t: TextView, on: Boolean) {
+            t.setTextColor(if (on) Color.parseColor("#0B120A") else Theme.ACCENT)
+            t.background = if (on) roundedBg(Theme.ACCENT, dp(12).toFloat())
+            else roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.STROKE, dp(1))
+        }
+        style(modeAcc, !adb)
+        style(modeAdb, adb)
+        adbBox.visibility = if (adb) View.VISIBLE else View.GONE
         adbStatus.text = AdbClient.statusText()
         adbStatus.setTextColor(AdbClient.statusColor())
     }

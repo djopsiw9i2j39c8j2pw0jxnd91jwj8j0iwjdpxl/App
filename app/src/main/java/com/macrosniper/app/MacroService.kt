@@ -91,6 +91,9 @@ class MacroService : AccessibilityService() {
                         startOverlay()
                     } else {
                         ensureAttached()
+                        // đề phòng hệ thống không báo xoay màn hình: tự dựng lại khi đổi hướng
+                        val ll = lastLand
+                        if (ll != null && ll != isLand()) rebuildAll()
                     }
                     if (Store.tapMode(this@MacroService) == TAP_ADB) AdbClient.tick(applicationContext)
                 }
@@ -152,6 +155,7 @@ class MacroService : AccessibilityService() {
             logoBmp = BitmapFactory.decodeResource(resources, R.drawable.logo_bubble)
         }
         buttons = Store.loadCurrent(this)
+        lastLand = null
         normalize()
         selectedId = -1
         listOpen = false
@@ -271,7 +275,65 @@ class MacroService : AccessibilityService() {
         }
     }
 
+    // ---- vị trí nút nhớ RIÊNG cho hướng dọc / ngang (không bị kẹt vị trí của hướng kia)
+    private var lastLand: Boolean? = null
+
+    private fun isLand(): Boolean {
+        val (w, h) = screenSize()
+        return w > h
+    }
+
+    private fun storePos(b: MacroButton, land: Boolean) {
+        if (land) {
+            b.lX = b.x
+            b.lY = b.y
+        } else {
+            b.pX = b.x
+            b.pY = b.y
+        }
+    }
+
+    /** Ghi vị trí đang hiển thị vào ô của hướng hiện tại. */
+    private fun syncSlots() {
+        val land = lastLand ?: return
+        for (b in buttons) storePos(b, land)
+    }
+
+    /**
+     * Gọi mỗi lần dựng lại giao diện: lưu vị trí của hướng cũ, rồi nạp vị trí của hướng mới.
+     * Hướng mới chưa từng đặt -> suy ra theo TỈ LỆ từ hướng kia (rồi nhớ lại, kéo đi đâu thì nhớ đó).
+     */
+    private fun applyOrientation(sw: Int, sh: Int) {
+        val land = sw > sh
+        val prev = lastLand
+        if (prev != null) for (b in buttons) storePos(b, prev)
+        val sho = minOf(sw, sh).toFloat()
+        val lng = maxOf(sw, sh).toFloat()
+        for (b in buttons) {
+            if (land) {
+                if (b.lX >= 0 && b.lY >= 0) {
+                    b.x = b.lX
+                    b.y = b.lY
+                } else if (b.pX >= 0 && b.pY >= 0) {
+                    b.x = Math.round(b.pX * lng / sho)
+                    b.y = Math.round(b.pY * sho / lng)
+                }
+            } else {
+                if (b.pX >= 0 && b.pY >= 0) {
+                    b.x = b.pX
+                    b.y = b.pY
+                } else if (b.lX >= 0 && b.lY >= 0) {
+                    b.x = Math.round(b.lX * sho / lng)
+                    b.y = Math.round(b.lY * lng / sho)
+                }
+            }
+            storePos(b, land)
+        }
+        lastLand = land
+    }
+
     private fun persist() {
+        syncSlots()
         Store.saveCurrent(this, buttons)
     }
 
@@ -320,7 +382,7 @@ class MacroService : AccessibilityService() {
 
     /** Báo GhostTouch bật "tiếp quản sớm" khi đang chạy macro bằng Gỡ lỗi WiFi (kèm hướng + cỡ màn hình). */
     private fun syncArm() {
-        val on = mode == Mode.RUN
+        val on = mode == Mode.RUN && Store.tapMode(this) == TAP_ADB
         val (sw, sh) = screenSize()
         AdbClient.arm(on, displayRotation(), sw, sh)
     }
@@ -330,6 +392,7 @@ class MacroService : AccessibilityService() {
         syncArm()
         if (mode == Mode.OFF) return
         val (sw, sh) = screenSize()
+        applyOrientation(sw, sh)
         if (mode == Mode.EDIT) addBackdrop()
         for (b in buttons) addButton(b, sw, sh)
         if (mode == Mode.EDIT) addPanel(sw, sh)
@@ -438,7 +501,7 @@ class MacroService : AccessibilityService() {
     private fun addBubble(sw: Int, sh: Int) {
         val size = dp(54)
         val lp = baseLp(size, size, true)
-        val saved = Store.bubblePos(this)
+        val saved = Store.bubblePos(this, sw > sh)
         lp.x = (saved?.first ?: dp(10)).coerceIn(0, maxOf(0, sw - size))
         lp.y = (saved?.second ?: (sh / 3)).coerceIn(0, maxOf(0, sh - size))
         val v = BubbleView(this, logoBmp)
@@ -454,7 +517,7 @@ class MacroService : AccessibilityService() {
                 },
                 onMove = {},
                 onTap = { onBubbleTap() },
-                onDragEnd = { Store.setBubblePos(this, lp.x, lp.y) }
+                onDragEnd = { Store.setBubblePos(this, lp.x, lp.y, isLand()) }
             )
         )
         bubble = v
@@ -730,7 +793,16 @@ class MacroService : AccessibilityService() {
     }
 
     private fun buildModeSection(c: LinearLayout) {
-        c.addView(label("Kết nối chạm (Gỡ lỗi WiFi)", 12f, Theme.MUTED))
+        val cur = Store.tapMode(this)
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.addView(label("Chế độ chạm", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
+        row.addView(actionBtn("Trợ năng", cur == TAP_ACC) { setTapMode(TAP_ACC) }, weighted(dp(36), 0, dp(4)))
+        row.addView(actionBtn("Gỡ lỗi WiFi", cur == TAP_ADB) { setTapMode(TAP_ADB) }, weighted(dp(36), dp(4), 0))
+        c.addView(row)
+        if (cur != TAP_ADB) return
+
         val st = label(AdbClient.statusText(), 12f, AdbClient.statusColor(), true)
         st.setPadding(dp(2), dp(6), dp(2), dp(4))
         c.addView(st)
@@ -930,6 +1002,7 @@ class MacroService : AccessibilityService() {
                     val loaded = Store.loadMacro(this, n)
                     if (loaded != null) {
                         buttons = loaded
+                        lastLand = null
                         normalize()
                         nameDraft = n
                         selectedId = -1
@@ -1206,6 +1279,7 @@ class MacroService : AccessibilityService() {
             toast("Hãy nhập tên macro trước khi lưu")
             return
         }
+        syncSlots()
         Store.saveMacro(this, name, buttons)
         persist()
         toast("Đã lưu macro: $name")
@@ -1325,7 +1399,7 @@ class MacroService : AccessibilityService() {
         val loc = IntArray(2)
         v.getLocationOnScreen(loc)
 
-        if (AdbClient.isConnected() && AdbClient.ghostReady) {
+        if (Store.tapMode(this) == TAP_ADB) {
             // chạm qua Gỡ lỗi WiFi: báo xong thì mới đi tiếp. Kèm hướng xoay + kích thước màn hình để
             // "ngón tay phụ" đổi đúng toạ độ sang tấm cảm ứng (kể cả khi game chạy ngang).
             val (sw, sh) = screenSize()
@@ -1340,7 +1414,7 @@ class MacroService : AccessibilityService() {
                 val now = SystemClock.uptimeMillis()
                 if (now - lastAdbWarn > 3000) {
                     lastAdbWarn = now
-                    toast("Chưa kết nối Gỡ lỗi WiFi · chạm bong bóng → Ghép cặp / Kết nối")
+                    toast("Gỡ lỗi WiFi chưa kết nối · chạm bong bóng, đổi sang chế độ Trợ năng để dùng tạm")
                 }
             } else {
                 // đề phòng shell không báo lại: tự đi tiếp sau 1,5 giây

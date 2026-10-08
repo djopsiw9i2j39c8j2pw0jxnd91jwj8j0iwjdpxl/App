@@ -31,7 +31,10 @@ data class MacroButton(
     var delayMs: Int,      // chỉ NUM: độ trễ trước khi bấm (tốc độ ấn)
     var mainNo: Int,       // chỉ NUM: thuộc main số mấy (0 = chưa nối main nào)
     var trigger: Int,      // chỉ MAIN: TRIG_PRESS / TRIG_RELEASE / TRIG_HOLD
-    var name: String = ""  // tên tuỳ chỉnh hiện trên nút (rỗng = hiện số / mainN mặc định)
+    var name: String = "",  // tên tuỳ chỉnh hiện trên nút (rỗng = hiện số / mainN mặc định)
+    // Vị trí nhớ RIÊNG cho từng hướng màn hình (-1 = chưa đặt). x,y ở trên là vị trí của hướng đang hiển thị.
+    var pX: Int = -1, var pY: Int = -1,   // hướng dọc
+    var lX: Int = -1, var lY: Int = -1    // hướng ngang
 )
 
 object Store {
@@ -44,7 +47,7 @@ object Store {
         p(ctx).edit().putBoolean("running", v).apply()
     }
 
-    fun tapMode(ctx: Context): Int = TAP_ADB // đã bỏ chọn chế độ: luôn dùng engine chạm hợp nhất, tự lùi về Trợ năng nếu chưa kết nối
+    fun tapMode(ctx: Context): Int = p(ctx).getInt("tapMode", TAP_ADB)
 
     fun setTapMode(ctx: Context, m: Int) {
         p(ctx).edit().putInt("tapMode", m).apply()
@@ -57,13 +60,18 @@ object Store {
         p(ctx).edit().putBoolean("earlyTake", v).apply()
     }
 
-    fun bubblePos(ctx: Context): Pair<Int, Int>? {
+    /** Vị trí bong bóng, nhớ riêng cho hướng dọc / ngang. */
+    fun bubblePos(ctx: Context, land: Boolean): Pair<Int, Int>? {
         val s = p(ctx)
-        return if (s.contains("bx")) Pair(s.getInt("bx", 0), s.getInt("by", 0)) else null
+        val kx = if (land) "blx" else "bx"
+        val ky = if (land) "bly" else "by"
+        return if (s.contains(kx)) Pair(s.getInt(kx, 0), s.getInt(ky, 0)) else null
     }
 
-    fun setBubblePos(ctx: Context, x: Int, y: Int) {
-        p(ctx).edit().putInt("bx", x).putInt("by", y).apply()
+    fun setBubblePos(ctx: Context, x: Int, y: Int, land: Boolean) {
+        val kx = if (land) "blx" else "bx"
+        val ky = if (land) "bly" else "by"
+        p(ctx).edit().putInt(kx, x).putInt(ky, y).apply()
     }
 
     private fun encode(list: List<MacroButton>): JSONArray {
@@ -81,6 +89,10 @@ object Store {
             o.put("main", b.mainNo)
             o.put("trigger", b.trigger)
             o.put("name", b.name)
+            o.put("pX", b.pX)
+            o.put("pY", b.pY)
+            o.put("lX", b.lX)
+            o.put("lY", b.lY)
             arr.put(o)
         }
         return arr
@@ -104,7 +116,11 @@ object Store {
                     mainNo = o.optInt("main", 0),
                     // tương thích dữ liệu cũ (chỉ có onRelease true/false)
                     trigger = o.optInt("trigger", if (o.optBoolean("onRelease", false)) TRIG_RELEASE else TRIG_PRESS),
-                    name = o.optString("name", "")
+                    name = o.optString("name", ""),
+                    pX = o.optInt("pX", -1),
+                    pY = o.optInt("pY", -1),
+                    lX = o.optInt("lX", -1),
+                    lY = o.optInt("lY", -1)
                 )
             )
         }
