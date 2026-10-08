@@ -16,6 +16,6 @@ App macro chạm màn hình với nút nổi (Android 7.0+).
 
 ## Chế độ chạm
 - **Trợ năng**: dùng dịch vụ Trợ năng để chạm (mặc định, chạy mọi máy Android 7+).
-- **Gỡ lỗi WiFi** (Android 11+): app tự làm máy khách ADB qua *Gỡ lỗi không dây*, chạm bằng quyền shell: ghi 1 "ngón thứ N" (slot riêng) thẳng vào màn hình cảm ứng nên vẫn xoay/kéo màn hình được trong lúc macro chạm (nếu máy không cho thì tự lùi về `input tap`). Không cần Shizuku hay app ngoài.
+- **Gỡ lỗi WiFi** (Android 11+): app tự làm máy khách ADB qua *Gỡ lỗi không dây*, chạm bằng quyền shell: chạy 1 tiến trình helper (TouchServer, quyền shell) bơm cảm ứng trực tiếp nên mượt, không chặn tay bạn (không chạy được thì tự lùi về `input tap`). Không cần Shizuku hay app ngoài.
   - Ghép cặp 1 lần: Tùy chọn nhà phát triển → Gỡ lỗi không dây → bật, bấm BẮT ĐẦU, chạm bong bóng → *Chế độ chạm* → *Gỡ lỗi WiFi* → *Ghép cặp*, rồi nhập cổng + mã 6 số từ hộp thoại "Ghép nối thiết bị bằng mã".
   - Cần đang kết nối Wi-Fi (không cần có internet). Mất Wi-Fi thì đổi về **Trợ năng** ngay trên bảng nổi hoặc ở màn hình chính để dùng tạm; có Wi-Fi lại thì chọn **Gỡ lỗi WiFi**, app tự nối lại.
