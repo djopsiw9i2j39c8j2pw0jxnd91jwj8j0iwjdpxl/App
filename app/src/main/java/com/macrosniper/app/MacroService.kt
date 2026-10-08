@@ -177,9 +177,7 @@ class MacroService : AccessibilityService() {
     private fun dp(v: Number): Int = (v.toFloat() * density + 0.5f).toInt()
 
     private fun screenSize(): Pair<Int, Int> {
-        // Chỉ chế độ Gỡ lỗi WiFi cần kích thước THẬT của màn hình (để quy đổi toạ độ sang tấm cảm ứng).
-        // Chế độ Trợ năng giữ cách tính của bản cũ.
-        if (Store.tapMode(this) == TAP_ADB) try {
+        try {
             val dmg = getSystemService(Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
             val d = dmg.getDisplay(android.view.Display.DEFAULT_DISPLAY)
             if (d != null) {
@@ -215,10 +213,9 @@ class MacroService : AccessibilityService() {
         // -> không xoay được camera / bấm được nút khác của game.
         var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_SPLIT_TOUCH or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-        // Chỉ chế độ Gỡ lỗi WiFi dùng SPLIT_TOUCH; chế độ Trợ năng giữ cờ y như bản cũ.
-        if (Store.tapMode(this) == TAP_ADB) flags = flags or WindowManager.LayoutParams.FLAG_SPLIT_TOUCH
         if (!touchable) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         val lp = WindowManager.LayoutParams(
             w, h,
@@ -741,24 +738,8 @@ class MacroService : AccessibilityService() {
 
     // ---- chế độ chạm: Trợ năng <-> Gỡ lỗi WiFi (đổi nhanh ngay trên bảng nổi)
 
-    /** Bật/tắt FLAG_SPLIT_TOUCH trên mọi cửa sổ đang hiển thị theo chế độ chạm hiện tại. */
-    private fun applySplitFlag() {
-        val split = Store.tapMode(this) == TAP_ADB
-        for ((v, lp) in live.toList()) {
-            val has = (lp.flags and WindowManager.LayoutParams.FLAG_SPLIT_TOUCH) != 0
-            if (has == split) continue
-            lp.flags = if (split) lp.flags or WindowManager.LayoutParams.FLAG_SPLIT_TOUCH
-            else lp.flags and WindowManager.LayoutParams.FLAG_SPLIT_TOUCH.inv()
-            try {
-                if (v.isAttachedToWindow) wm.updateViewLayout(v, lp)
-            } catch (_: Exception) {
-            }
-        }
-    }
-
     private fun setTapMode(m: Int) {
         Store.setTapMode(this, m)
-        applySplitFlag()
         cancelChain()
         if (m == TAP_ADB) AdbClient.connect(applicationContext) else AdbClient.disconnect()
         syncArm()
@@ -1442,7 +1423,6 @@ class MacroService : AccessibilityService() {
             return
         }
 
-        // ---- CHẾ ĐỘ TRỢ NĂNG: giữ nguyên cách chạm của bản cũ (dispatchGesture), tách riêng khỏi GhostTouch/ADB ----
         val path = Path()
         path.moveTo(loc[0] + v.width / 2f, loc[1] + v.height / 2f)
         val stroke = GestureDescription.StrokeDescription(path, 0L, 10L)
