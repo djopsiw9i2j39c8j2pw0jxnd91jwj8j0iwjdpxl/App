@@ -32,7 +32,7 @@ import java.util.regex.Pattern;
  *
  * Chỉ dùng java.* (không Android API, không Kotlin) để chạy được trong app_process.
  */
-public final class GhostTouch {
+public final class GhostTouch implements Toucher {
 
     // ---- hằng số Linux input
     static final int EV_SYN = 0, EV_KEY = 1, EV_ABS = 3;
@@ -272,6 +272,307 @@ public final class GhostTouch {
         }
     }
 
+    // ------------------------------------------------------------------ giao diện chung
+
+    /** Nơi bơm MotionEvent vào hệ thống (tách ra để dễ thử). action đã mã hoá sẵn (POINTER_INDEX << 8). */
+    interface Injector {
+        long now();
+
+        void inject(int action, int n, int[] ids, float[] xs, float[] ys, long downTime) throws Exception;
+    }
+
+    /** Bơm MotionEvent thật bằng InputManager.injectInputEvent (quyền shell có INJECT_EVENTS, giống lệnh `input`). */
+    static final class ReflectInjector implements Injector {
+        private final Object im;
+        private final java.lang.reflect.Method m;
+        private final boolean three;
+
+        ReflectInjector() throws Exception {
+            Object inst = null;
+            java.lang.reflect.Method found = null;
+            boolean th = false;
+            String[] names = {"android.hardware.input.InputManagerGlobal", "android.hardware.input.InputManager"};
+            Throwable last = null;
+            for (String cn : names) {
+                try {
+                    Class<?> c = Class.forName(cn);
+                    java.lang.reflect.Method gi = c.getDeclaredMethod("getInstance");
+                    gi.setAccessible(true);
+                    Object o = gi.invoke(null);
+                    if (o == null) continue;
+                    try {
+                        found = o.getClass().getMethod("injectInputEvent", android.view.InputEvent.class, int.class);
+                        th = false;
+                    } catch (NoSuchMethodException e) {
+                        found = o.getClass().getMethod("injectInputEvent", android.view.InputEvent.class, int.class, int.class);
+                        th = true;
+                    }
+                    inst = o;
+                    break;
+                } catch (Throwable t) {
+                    last = t;
+                }
+            }
+            if (inst == null || found == null) throw new Exception("không có InputManager (" + last + ")");
+            im = inst;
+            m = found;
+            three = th;
+        }
+
+        @Override
+        public long now() {
+            return android.os.SystemClock.uptimeMillis();
+        }
+
+        @Override
+        public void inject(int action, int n, int[] ids, float[] xs, float[] ys, long downTime) throws Exception {
+            android.view.MotionEvent.PointerProperties[] pp = new android.view.MotionEvent.PointerProperties[n];
+            android.view.MotionEvent.PointerCoords[] pc = new android.view.MotionEvent.PointerCoords[n];
+            for (int i = 0; i < n; i++) {
+                pp[i] = new android.view.MotionEvent.PointerProperties();
+                pp[i].id = ids[i];
+                pp[i].toolType = android.view.MotionEvent.TOOL_TYPE_FINGER;
+                pc[i] = new android.view.MotionEvent.PointerCoords();
+                pc[i].x = xs[i];
+                pc[i].y = ys[i];
+                pc[i].pressure = 1f;
+                pc[i].size = 1f;
+            }
+            android.view.MotionEvent ev = android.view.MotionEvent.obtain(downTime, now(), action, n, pp, pc,
+                    0, 0, 1f, 1f, 0, 0, 0x00001002 /* SOURCE_TOUCHSCREEN */, 0);
+            try {
+                Object r = three ? m.invoke(im, ev, 0, -1) : m.invoke(im, ev, 0); // 0 = INJECT_INPUT_EVENT_MODE_ASYNC
+                if (r instanceof Boolean && !((Boolean) r)) throw new Exception("injectInputEvent trả về false");
+            } finally {
+                ev.recycle();
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ TIẾP QUẢN NGÓN THẬT (khi không ghi được /dev/input)
+
+    /**
+     * Dùng khi máy không cho ghi vào /dev/input (EACCES) nhưng vẫn cho ĐỌC.
+     *
+     * Android không cho 2 "thiết bị chạm" cùng lúc: cú chạm bơm vào (input tap...) sẽ HUỶ ngón thật. Nên thay vì
+     * cố giữ ngón thật nguyên vẹn, ta làm ngược lại: khi macro cần chạm mà đang có ngón thật trên màn hình, ta
+     * đọc toạ độ ngón thật từ /dev/input rồi BƠM LẠI chính ngón thật đó cùng với ngón macro thành MỘT luồng đa chạm
+     * nhất quán (một thiết bị duy nhất). Ngón thật vẫn kéo camera/bấm nút bình thường (qua bản sao), ngón macro
+     * là con trỏ thêm. Khi mọi ngón thật nhấc lên thì ta nhả luồng và trả lại cho hệ thống.
+     */
+    static final class Takeover implements Toucher, Runnable {
+        static final int GHOST_ID = 30;
+        static final int A_DOWN = 0, A_UP = 1, A_MOVE = 2, A_PDOWN = 5, A_PUP = 6;
+
+        private final Dev dev;
+        private final InputStream in;
+        private final Injector inj;
+        private final int evSize;
+        private final int nSlots;
+        private final Object lock = new Object();
+
+        private final boolean[] act, hasX, hasY;
+        private final int[] rawX, rawY;
+        private int cur = 0;
+        private int rot = 0, w = 1, h = 1;
+
+        private boolean started = false;
+        private long downTime = 0;
+        private final int[] ids = new int[32];
+        private final float[] xs = new float[32], ys = new float[32];
+        private int n = 0;
+        volatile boolean alive = true;
+        volatile String lastError = "";
+
+        Takeover(Dev dev, InputStream in, Injector inj, boolean is64) {
+            this.dev = dev;
+            this.in = in;
+            this.inj = inj;
+            this.evSize = is64 ? 24 : 16;
+            this.nSlots = Math.max(2, Math.min(GHOST_ID, dev.slot.max + 1));
+            act = new boolean[nSlots];
+            hasX = new boolean[nSlots];
+            hasY = new boolean[nSlots];
+            rawX = new int[nSlots];
+            rawY = new int[nSlots];
+        }
+
+        // ---- đọc /dev/input
+        @Override
+        public void run() {
+            try {
+                byte[] buf = new byte[evSize * 64];
+                while (true) {
+                    int len = in.read(buf);
+                    if (len <= 0) break;
+                    ByteBuffer bb = ByteBuffer.wrap(buf, 0, len - (len % evSize)).order(ByteOrder.LITTLE_ENDIAN);
+                    while (bb.remaining() >= evSize) {
+                        bb.position(bb.position() + (evSize - 8));
+                        int type = bb.getShort() & 0xFFFF;
+                        int code = bb.getShort() & 0xFFFF;
+                        int value = bb.getInt();
+                        feed(type, code, value);
+                    }
+                }
+            } catch (Throwable t) {
+                lastError = String.valueOf(t);
+            }
+            alive = false;
+        }
+
+        /** Nạp 1 sự kiện evdev (public cho test). */
+        void feed(int type, int code, int value) {
+            synchronized (lock) {
+                if (type == EV_ABS) {
+                    if (code == ABS_MT_SLOT) {
+                        if (value >= 0 && value < nSlots) cur = value; else cur = -1;
+                    } else if (cur >= 0) {
+                        if (code == ABS_MT_TRACKING_ID) {
+                            act[cur] = value != -1;
+                            if (value == -1) {
+                                hasX[cur] = false;
+                                hasY[cur] = false;
+                            }
+                        } else if (code == ABS_MT_POSITION_X) {
+                            rawX[cur] = value;
+                            hasX[cur] = true;
+                        } else if (code == ABS_MT_POSITION_Y) {
+                            rawY[cur] = value;
+                            hasY[cur] = true;
+                        }
+                    }
+                } else if (type == EV_SYN && code == SYN_REPORT) {
+                    if (started) {
+                        try {
+                            syncLocked();
+                        } catch (Throwable t) {
+                            lastError = String.valueOf(t);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- toạ độ
+        private boolean real(int s) {
+            return act[s] && hasX[s] && hasY[s];
+        }
+
+        private float sx(int s) {
+            return screen(s, true);
+        }
+
+        private float sy(int s) {
+            return screen(s, false);
+        }
+
+        private float screen(int s, boolean wantX) {
+            double rx = (rawX[s] - dev.x.min + 0.5) / (double) (dev.x.max - dev.x.min + 1);
+            double ry = (rawY[s] - dev.y.min + 0.5) / (double) (dev.y.max - dev.y.min + 1);
+            double nx, ny;
+            switch (rot & 3) {
+                case 1: nx = ry; ny = 1.0 - rx; break;
+                case 2: nx = 1.0 - rx; ny = 1.0 - ry; break;
+                case 3: nx = 1.0 - ry; ny = rx; break;
+                default: nx = rx; ny = ry; break;
+            }
+            return (float) (wantX ? nx * w : ny * h);
+        }
+
+        // ---- luồng bơm
+        private int indexOf(int id) {
+            for (int i = 0; i < n; i++) if (ids[i] == id) return i;
+            return -1;
+        }
+
+        private void emit(int action) throws Exception {
+            inj.inject(action, n, ids, xs, ys, downTime);
+        }
+
+        private void addPointer(int id, float x, float y) throws Exception {
+            ids[n] = id;
+            xs[n] = x;
+            ys[n] = y;
+            n++;
+            if (n == 1) {
+                downTime = inj.now();
+                emit(A_DOWN);
+            } else {
+                emit(A_PDOWN | ((n - 1) << 8));
+            }
+        }
+
+        private void removePointer(int id) throws Exception {
+            int idx = indexOf(id);
+            if (idx < 0) return;
+            if (n == 1) emit(A_UP); else emit(A_PUP | (idx << 8));
+            for (int i = idx; i < n - 1; i++) {
+                ids[i] = ids[i + 1];
+                xs[i] = xs[i + 1];
+                ys[i] = ys[i + 1];
+            }
+            n--;
+        }
+
+        /** Đồng bộ luồng bơm theo trạng thái ngón thật hiện tại (gọi khi đang giữ [lock] và đã started). */
+        private void syncLocked() throws Exception {
+            for (int i = n - 1; i >= 0; i--) {
+                int id = ids[i];
+                if (id != GHOST_ID && !real(id)) removePointer(id);
+            }
+            for (int s = 0; s < nSlots; s++) {
+                if (real(s) && indexOf(s) < 0) addPointer(s, sx(s), sy(s));
+            }
+            boolean moved = false;
+            for (int i = 0; i < n; i++) {
+                int id = ids[i];
+                if (id == GHOST_ID) continue;
+                float x = sx(id), y = sy(id);
+                if (Math.abs(x - xs[i]) >= 0.5f || Math.abs(y - ys[i]) >= 0.5f) {
+                    xs[i] = x;
+                    ys[i] = y;
+                    moved = true;
+                }
+            }
+            if (moved && n > 0) emit(A_MOVE);
+            if (n == 0) started = false;
+        }
+
+        /** Số ngón thật đang đặt (public cho test). */
+        int realCount() {
+            synchronized (lock) {
+                int c = 0;
+                for (int s = 0; s < nSlots; s++) if (real(s)) c++;
+                return c;
+            }
+        }
+
+        @Override
+        public void tap(int x, int y, int rot, int w, int h, int holdMs) throws Exception {
+            synchronized (lock) {
+                this.rot = rot;
+                this.w = Math.max(1, w);
+                this.h = Math.max(1, h);
+                if (!started) {
+                    started = true;
+                    // đang có ngón thật -> chép toàn bộ vào luồng bơm (ngón thật bị Android huỷ 1 lần rồi được ta nuôi tiếp)
+                    for (int s = 0; s < nSlots; s++) if (real(s)) addPointer(s, sx(s), sy(s));
+                }
+                if (indexOf(GHOST_ID) >= 0) removePointer(GHOST_ID);
+                addPointer(GHOST_ID, x, y);
+            }
+            try {
+                Thread.sleep(Math.max(8, holdMs));
+            } finally {
+                synchronized (lock) {
+                    if (indexOf(GHOST_ID) >= 0) removePointer(GHOST_ID);
+                    if (n == 0) started = false;
+                    else syncLocked();
+                }
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ bộ chạm
 
     private final Dev dev;
@@ -305,7 +606,8 @@ public final class GhostTouch {
     }
 
     /** Chạm 1 cái: ngón phụ xuống -> giữ [holdMs] -> nhấc. Ngón thật (nếu có) không bị đụng tới. */
-    void tap(int x, int y, int rot, int w, int h, int holdMs) throws Exception {
+    @Override
+    public void tap(int x, int y, int rot, int w, int h, int holdMs) throws Exception {
         int[] raw = mapToRaw(dev, x, y, rot, w, h);
         int tid = nextTid();
         boolean trk = tracker.ok;
@@ -347,7 +649,7 @@ public final class GhostTouch {
 
     public static void main(String[] args) {
         PrintStream so = new PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), true);
-        GhostTouch g;
+        Toucher g;
         try {
             Dev d = pickTouchscreen(parseProps(runGetevent()));
             if (d == null) {
@@ -358,13 +660,32 @@ public final class GhostTouch {
                 so.println("FAIL màn hình cảm ứng chỉ có 1 slot");
                 return;
             }
+            Toucher direct = null;
+            String why = "";
             try {
-                g = new GhostTouch(d, d.path, is64());
+                GhostTouch gt = new GhostTouch(d, d.path, is64());
+                direct = gt;
+                so.println("READY " + d.path + " " + (d.x.max + 1) + " " + (d.y.max + 1) + " " + gt.ghostSlot + " WRITE");
             } catch (Throwable t) {
-                so.println("FAIL không ghi được " + d.path + " (" + t.getMessage() + ")");
-                return;
+                why = String.valueOf(t.getMessage());
             }
-            so.println("READY " + d.path + " " + (d.x.max + 1) + " " + (d.y.max + 1) + " " + g.ghostSlot);
+            if (direct == null) {
+                // Không ghi được /dev/input -> tiếp quản ngón thật (đọc /dev/input + bơm MotionEvent)
+                try {
+                    InputStream rin = new FileInputStream(d.path);
+                    Injector inj = new ReflectInjector();
+                    Takeover tk = new Takeover(d, rin, inj, is64());
+                    Thread t = new Thread(tk, "takeover-reader");
+                    t.setDaemon(true);
+                    t.start();
+                    direct = tk;
+                    so.println("READY " + d.path + " " + (d.x.max + 1) + " " + (d.y.max + 1) + " 0 TAKEOVER");
+                } catch (Throwable t2) {
+                    so.println("FAIL không ghi được " + d.path + " (" + why + "); tiếp quản lỗi: " + t2.getMessage());
+                    return;
+                }
+            }
+            g = direct;
         } catch (Throwable t) {
             so.println("FAIL " + t);
             return;
@@ -392,4 +713,9 @@ public final class GhostTouch {
         }
         System.exit(0);
     }
+}
+
+/** Một "bộ chạm": ghi thẳng /dev/input (GhostTouch) hoặc tiếp quản ngón thật (GhostTouch.Takeover). */
+interface Toucher {
+    void tap(int x, int y, int rot, int w, int h, int holdMs) throws Exception;
 }

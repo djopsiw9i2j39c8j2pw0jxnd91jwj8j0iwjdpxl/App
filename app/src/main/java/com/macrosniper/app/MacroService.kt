@@ -372,10 +372,17 @@ class MacroService : AccessibilityService() {
                 )
             )
         } else if (b.kind == Kind.MAIN) {
+            // Chế độ "tiếp quản ngón thật": khi macro chạm, hệ thống HUỶ ngón thật 1 lần rồi app bơm lại đúng ngón đó.
+            // Nên nút main sẽ thấy CANCEL rồi DOWN lặp lại ngay -> bỏ qua cặp đó, đừng dừng/khởi động lại chuỗi.
+            var held = false
+            var cancelAt = 0L
             v.setOnTouchListener { view, e ->
                 val bv = view as BtnView
                 when (e.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
+                        val replay = held && SystemClock.uptimeMillis() - cancelAt < 400L
+                        held = true
+                        if (replay) return@setOnTouchListener true
                         bv.pressedFx = true
                         when (b.trigger) {
                             TRIG_PRESS -> runChain(b.number)
@@ -383,6 +390,7 @@ class MacroService : AccessibilityService() {
                         }
                     }
                     MotionEvent.ACTION_UP -> {
+                        held = false
                         bv.pressedFx = false
                         when (b.trigger) {
                             TRIG_RELEASE -> runChain(b.number)
@@ -390,6 +398,12 @@ class MacroService : AccessibilityService() {
                         }
                     }
                     MotionEvent.ACTION_CANCEL -> {
+                        if (held && AdbClient.takeover && Store.tapMode(this) == TAP_ADB) {
+                            // do tiếp quản: giữ nguyên trạng thái, chờ DOWN lặp lại / UP thật
+                            cancelAt = SystemClock.uptimeMillis()
+                            return@setOnTouchListener true
+                        }
+                        held = false
                         bv.pressedFx = false
                         if (b.trigger == TRIG_HOLD) cancelChain()
                     }

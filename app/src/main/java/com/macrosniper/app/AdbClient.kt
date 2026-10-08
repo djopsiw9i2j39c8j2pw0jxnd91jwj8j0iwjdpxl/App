@@ -67,6 +67,11 @@ object AdbClient {
     var ghostReady = false
         private set
 
+    /** true = máy không cho ghi /dev/input nên đang dùng chế độ "tiếp quản ngón thật" (bơm lại cả ngón thật + ngón macro). */
+    @Volatile
+    var takeover = false
+        private set
+
     @Volatile
     private var ghostNote = ""
     private var ghostStream: Any? = null
@@ -89,6 +94,7 @@ object AdbClient {
 
     fun statusText(): String = when {
         !supported() -> "Cần Android 11 trở lên để dùng Gỡ lỗi WiFi"
+        state == State.CONNECTED && ghostReady && takeover -> "●  Đã kết nối · tiếp quản ngón thật (vừa chỉnh cam vừa macro)"
         state == State.CONNECTED && ghostReady -> "●  Đã kết nối · ngón tay phụ (không chặn ngón thật)"
         state == State.CONNECTED -> "●  Đã kết nối · chạm bằng input tap" +
                 (if (ghostNote.isNotEmpty()) " · $ghostNote" else "")
@@ -451,6 +457,7 @@ object AdbClient {
                 val line = (r.readLine() ?: break).trim()
                 when {
                     line.startsWith("READY") -> {
+                        takeover = line.trim().endsWith("TAKEOVER")
                         ghostNote = ""
                         ghostReady = true
                         latch.countDown()
@@ -486,6 +493,7 @@ object AdbClient {
 
     private fun closeGhost() {
         ghostReady = false
+        takeover = false
         val o = ghostOut
         try {
             o?.write("Q\n".toByteArray())
