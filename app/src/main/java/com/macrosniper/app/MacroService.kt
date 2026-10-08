@@ -1264,9 +1264,16 @@ class MacroService : AccessibilityService() {
 
         if (Store.tapMode(this) == TAP_ADB) {
             // chạm qua Gỡ lỗi WiFi: shell báo xong thì mới đi tiếp
+            // hướng màn hình + kích thước thật: cần để đổi tọa độ sang tấm cảm ứng khi xoay ngang
+            val dm = DisplayMetrics()
+            @Suppress("DEPRECATION")
+            wm.defaultDisplay.getRealMetrics(dm)
+            @Suppress("DEPRECATION")
+            val rot = wm.defaultDisplay.rotation
             val ok = AdbClient.tap(
                 (loc[0] + v.width / 2f).toInt(),
-                (loc[1] + v.height / 2f).toInt()
+                (loc[1] + v.height / 2f).toInt(),
+                rot, dm.widthPixels, dm.heightPixels
             ) { handler.post { finish() } }
             v.flashFx()
             if (!ok) {
