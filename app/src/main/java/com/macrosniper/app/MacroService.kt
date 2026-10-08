@@ -184,9 +184,21 @@ class MacroService : AccessibilityService() {
         }
     }
 
+    /** Surface.ROTATION_0..3 của màn hình chính. */
+    private fun displayRotation(): Int = try {
+        val dm = getSystemService(Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
+        dm.getDisplay(android.view.Display.DEFAULT_DISPLAY)?.rotation ?: 0
+    } catch (_: Exception) {
+        0
+    }
+
     private fun baseLp(w: Int, h: Int, touchable: Boolean): WindowManager.LayoutParams {
+        // FLAG_SPLIT_TOUCH: cho phép ngón này chạm nút nổi, ngón kia chạm game (cửa sổ khác) CÙNG LÚC.
+        // Thiếu cờ này thì khi 1 ngón đang đè nút main, mọi ngón khác bị Android dồn hết vào nút main
+        // -> không xoay được camera / bấm được nút khác của game.
         var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_SPLIT_TOUCH or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
         if (!touchable) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
@@ -1263,17 +1275,13 @@ class MacroService : AccessibilityService() {
         v.getLocationOnScreen(loc)
 
         if (Store.tapMode(this) == TAP_ADB) {
-            // chạm qua Gỡ lỗi WiFi: shell báo xong thì mới đi tiếp
-            // hướng màn hình + kích thước thật: cần để đổi tọa độ sang tấm cảm ứng khi xoay ngang
-            val dm = DisplayMetrics()
-            @Suppress("DEPRECATION")
-            wm.defaultDisplay.getRealMetrics(dm)
-            @Suppress("DEPRECATION")
-            val rot = wm.defaultDisplay.rotation
+            // chạm qua Gỡ lỗi WiFi: báo xong thì mới đi tiếp. Kèm hướng xoay + kích thước màn hình để
+            // "ngón tay phụ" đổi đúng toạ độ sang tấm cảm ứng (kể cả khi game chạy ngang).
+            val (sw, sh) = screenSize()
             val ok = AdbClient.tap(
                 (loc[0] + v.width / 2f).toInt(),
                 (loc[1] + v.height / 2f).toInt(),
-                rot, dm.widthPixels, dm.heightPixels
+                displayRotation(), sw, sh
             ) { handler.post { finish() } }
             v.flashFx()
             if (!ok) {

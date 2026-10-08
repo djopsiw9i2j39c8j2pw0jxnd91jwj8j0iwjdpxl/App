@@ -61,35 +61,19 @@ object AdbClient {
     private var stream: Any? = null
     private var outS: OutputStream? = null
 
-    /**
-     * Màn hình cảm ứng thật (/dev/input/eventN) + thông số trục MT, dò 1 lần sau khi kết nối.
-     * Có cái này thì chạm bằng cách ghi thẳng 1 "ngón thứ N" (slot riêng) vào đúng thiết bị cảm ứng
-     * -> chạy song song với ngón tay thật, không làm hủy thao tác xoay/kéo đang giữ.
-     * null = không dùng được -> quay về `input tap`.
-     */
-    private class TouchDev(
-        val path: String,
-        val minX: Int, val maxX: Int,
-        val minY: Int, val maxY: Int,
-        val slot: Int,
-        val minTid: Int, val maxTid: Int,
-        val pressure: Int?, // giá trị ABS_MT_PRESSURE sẽ gửi (null = máy không có trục này)
-        val major: Int?     // giá trị ABS_MT_TOUCH_MAJOR sẽ gửi
-    )
-
+    // "Ngón tay phụ" (GhostTouch chạy bằng app_process quyền shell): ghi thẳng đa chạm vào màn hình cảm ứng
+    // để Android coi là thêm 1 ngón thật -> ngón gốc của mình KHÔNG bị huỷ/kẹt khi macro đang bấm.
     @Volatile
-    private var touch: TouchDev? = null
-
-    // Helper = TouchServer chạy bằng quyền shell (xem TouchServer.kt)
-    @Volatile
-    private var helperReady = false
-    private var helperStream: Any? = null
-    private var helperOut: OutputStream? = null
-
-    @Volatile
-    var helperError: String = ""
+    var ghostReady = false
         private set
-    private val tidCounter = AtomicInteger()
+
+    @Volatile
+    private var ghostNote = ""
+    private var ghostStream: Any? = null
+    private var ghostOut: OutputStream? = null
+
+    /** Thời gian ngón phụ đè xuống mỗi cú chạm (ms). */
+    private const val GHOST_HOLD_MS = 35
 
     private val ui = Handler(Looper.getMainLooper())
     private val bg = Executors.newSingleThreadExecutor() // kết nối / ghép cặp (chặn lâu)
@@ -105,9 +89,9 @@ object AdbClient {
 
     fun statusText(): String = when {
         !supported() -> "Cần Android 11 trở lên để dùng Gỡ lỗi WiFi"
-        state == State.CONNECTED && helperReady -> "●  Đã kết nối · helper chạm liền mạch (không chặn tay bạn)"
-        state == State.CONNECTED && touch != null -> "●  Đã kết nối · chạm đa điểm (vẫn xoay/di chuyển được)"
-        state == State.CONNECTED -> "●  Đã kết nối · chạm bằng input tap (có thể bị đơ)" + (if (helperError.isNotEmpty()) " · helper lỗi: $helperError" else "")
+        state == State.CONNECTED && ghostReady -> "●  Đã kết nối · ngón tay phụ (không chặn ngón thật)"
+        state == State.CONNECTED -> "●  Đã kết nối · chạm bằng input tap" +
+                (if (ghostNote.isNotEmpty()) " · $ghostNote" else "")
         state == State.CONNECTING -> "…  Đang kết nối"
         else -> "○  Chưa kết nối" + (if (lastError.isNotEmpty()) " · $lastError" else "")
     }
@@ -312,15 +296,14 @@ object AdbClient {
                 val outs = st.openOutputStream()
                 stream = st
                 outS = outs
-                // ưu tiên helper (tiến trình nền quyền shell); không chạy được mới thử sendevent / input tap
-                val apk = app.applicationInfo.sourceDir
-                if (!startHelper(m, apk)) touch = probeTouch(m)
                 lastError = ""
                 state = State.CONNECTED
                 notifyUi()
                 val t = Thread { readLoop(st, ins) }
                 t.isDaemon = true
                 t.start()
+                // Đã chạm được bằng input tap rồi; giờ thử bật "ngón tay phụ" (nếu máy cho phép thì tự dùng).
+                startGhost(app, m)
             } catch (t: Throwable) {
                 closeQuietly()
                 lastError = friendly(t)
@@ -328,89 +311,6 @@ object AdbClient {
                 notifyUi()
             }
         }
-    }
-
-    /** Chạy 1 lệnh shell độc lập, đọc hết kết quả (tối đa [timeoutMs]). Lỗi/quá giờ -> chuỗi rỗng. */
-    private fun runOnce(m: AbsAdbConnectionManager, cmd: String, timeoutMs: Long = 4000L): String {
-        val out = StringBuilder()
-        val t = Thread {
-            try {
-                val s = m.openStream("shell:$cmd")
-                try {
-                    out.append(String(s.openInputStream().readBytes()))
-                } finally {
-                    try {
-                        s.close()
-                    } catch (_: Throwable) {
-                    }
-                }
-            } catch (_: Throwable) {
-            }
-        }
-        t.isDaemon = true
-        t.start()
-        t.join(timeoutMs)
-        return synchronized(out) { out.toString() }
-    }
-
-    /**
-     * Tìm màn hình cảm ứng trong `getevent -p`, rồi thử ghi 1 sự kiện vô hại (SYN_REPORT)
-     * để chắc chắn quyền shell được ghi vào thiết bị đó. Không được -> null (dùng `input tap`).
-     */
-    private fun probeTouch(m: AbsAdbConnectionManager): TouchDev? {
-        try {
-            val text = runOnce(m, "getevent -p 2>/dev/null")
-            val dev = parseTouch(text) ?: return null
-            val r = runOnce(m, "sendevent ${dev.path} 0 0 0 2>&1; echo RC=$?").trim()
-            return if (r == "RC=0") dev else null
-        } catch (_: Throwable) {
-            return null
-        }
-    }
-
-    private fun parseTouch(text: String): TouchDev? {
-        val axisRe = Regex("""\b([0-9a-fA-F]{4})\s*:\s*value\s+-?\d+,\s*min\s+(-?\d+),\s*max\s+(-?\d+)""")
-        // tách theo từng "add device N: /dev/input/eventM"
-        val paths = ArrayList<String>()
-        val bodies = ArrayList<StringBuilder>()
-        for (raw in text.lines()) {
-            val line = raw.trimEnd()
-            if (line.startsWith("add device")) {
-                paths.add(line.substringAfter(": ", "").trim())
-                bodies.add(StringBuilder())
-            } else if (bodies.isNotEmpty()) {
-                bodies.last().append(line).append('\n')
-            }
-        }
-        var best: TouchDev? = null
-        var bestDirect = false
-        for (i in paths.indices) {
-            val body = bodies[i].toString()
-            val ax = HashMap<Int, IntArray>() // code -> [min, max]
-            for (mm in axisRe.findAll(body)) {
-                val code = mm.groupValues[1].toInt(16)
-                ax[code] = intArrayOf(mm.groupValues[2].toInt(), mm.groupValues[3].toInt())
-            }
-            val x = ax[0x35] ?: continue // ABS_MT_POSITION_X
-            val y = ax[0x36] ?: continue // ABS_MT_POSITION_Y
-            val slot = ax[0x2f] ?: continue // ABS_MT_SLOT (giao thức B)
-            val tid = ax[0x39] ?: continue // ABS_MT_TRACKING_ID
-            if (slot[1] < 1 || x[1] <= x[0] || y[1] <= y[0] || tid[1] <= tid[0]) continue
-            val direct = body.contains("INPUT_PROP_DIRECT")
-            if (best != null && (bestDirect || !direct)) continue
-            val pr = ax[0x3a]
-            val mj = ax[0x30]
-            best = TouchDev(
-                paths[i],
-                x[0], x[1], y[0], y[1],
-                slot[1], // dùng slot cuối cùng, ít khi trùng ngón tay thật
-                tid[0], tid[1],
-                pr?.let { (it[0] + 1).coerceAtLeast(minOf(it[1], 50)).coerceAtMost(it[1]) },
-                mj?.let { (it[0] + 1).coerceAtLeast(minOf(it[1], 6)).coerceAtMost(it[1]) }
-            )
-            bestDirect = direct
-        }
-        return best
     }
 
     private class Found(val port: Int, val host: String?)
@@ -511,7 +411,101 @@ object AdbClient {
         if (wantUp && state == State.OFF && SystemClock.uptimeMillis() - lastTry > 15_000L) connect(ctx)
     }
 
+    // ------------------------------------------------------------------ ngón tay phụ (GhostTouch)
+
+    private fun startGhost(app: Context, m: AbsAdbConnectionManager) {
+        ghostReady = false
+        ghostNote = "đang khởi tạo ngón phụ…"
+        notifyUi()
+        try {
+            val pkg = app.packageName
+            // exec: = shell thô, không pty (không bị dội lệnh, không đổi \n). CLASSPATH trỏ vào chính APK này,
+            // nên lớp GhostTouch nằm sẵn trong app, không cần đẩy file nào lên máy.
+            val cmd = "exec:CLASSPATH=\"\$(pm path $pkg | head -n 1 | cut -d: -f2)\" " +
+                    "exec app_process / com.macrosniper.app.GhostTouch"
+            val s = m.openStream(cmd)
+            val ins = s.openInputStream()
+            val outs = s.openOutputStream()
+            ghostStream = s
+            ghostOut = outs
+            val latch = CountDownLatch(1)
+            val t = Thread { ghostReadLoop(s, ins, latch) }
+            t.isDaemon = true
+            t.start()
+            latch.await(8, TimeUnit.SECONDS)
+            if (!ghostReady) {
+                if (ghostNote.isEmpty() || ghostNote.startsWith("đang")) ghostNote = "ngón phụ không khởi động được"
+                closeGhost()
+            }
+        } catch (t: Throwable) {
+            ghostNote = "ngón phụ lỗi: " + (t.message ?: t.javaClass.simpleName).take(40)
+            closeGhost()
+        }
+        notifyUi()
+    }
+
+    private fun ghostReadLoop(me: Any, ins: InputStream, latch: CountDownLatch) {
+        try {
+            val r = BufferedReader(InputStreamReader(ins))
+            while (true) {
+                val line = (r.readLine() ?: break).trim()
+                when {
+                    line.startsWith("READY") -> {
+                        ghostNote = ""
+                        ghostReady = true
+                        latch.countDown()
+                        notifyUi()
+                    }
+                    line.startsWith("FAIL") -> {
+                        ghostNote = line.removePrefix("FAIL").trim().take(70)
+                        latch.countDown()
+                    }
+                    line.startsWith("D ") -> {
+                        line.substring(2).trim().substringBefore(' ').toIntOrNull()?.let { acks.remove(it)?.invoke() }
+                    }
+                    line.startsWith("E ") -> {
+                        // lỗi giữa chừng -> các cú chạm sau tạm dùng input tap
+                        ghostReady = false
+                        ghostNote = "ngón phụ lỗi, tạm dùng input tap"
+                        line.substring(2).trim().substringBefore(' ').toIntOrNull()?.let { acks.remove(it)?.invoke() }
+                        notifyUi()
+                    }
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        latch.countDown()
+        if (ghostStream === me) {
+            ghostReady = false
+            if (ghostNote.isEmpty()) ghostNote = "ngón phụ đã dừng"
+            ghostStream = null
+            ghostOut = null
+            notifyUi()
+        }
+    }
+
+    private fun closeGhost() {
+        ghostReady = false
+        val o = ghostOut
+        try {
+            o?.write("Q\n".toByteArray())
+            o?.flush()
+        } catch (_: Throwable) {
+        }
+        try {
+            o?.close()
+        } catch (_: Throwable) {
+        }
+        try {
+            (ghostStream as? Closeable)?.close()
+        } catch (_: Throwable) {
+        }
+        ghostStream = null
+        ghostOut = null
+    }
+
     private fun closeQuietly() {
+        closeGhost()
         try {
             outS?.close()
         } catch (_: Throwable) {
@@ -527,8 +521,6 @@ object AdbClient {
         mgr = null // lần sau dựng lại (khoá đã lưu nên không phải ghép cặp lại)
         stream = null
         outS = null
-        touch = null
-        closeHelper()
         val pending = acks.values.toList()
         acks.clear()
         for (a in pending) {
@@ -536,80 +528,6 @@ object AdbClient {
                 a()
             } catch (_: Throwable) {
             }
-        }
-    }
-
-    /** Mở TouchServer qua 1 luồng shell riêng. true = helper đã báo READY. */
-    private fun startHelper(m: AbsAdbConnectionManager, apk: String): Boolean {
-        helperError = ""
-        try {
-            val s = m.openStream("shell:CLASSPATH=$apk exec app_process /system/bin com.macrosniper.app.TouchServer")
-            val ins = s.openInputStream()
-            val outs = s.openOutputStream()
-            helperStream = s
-            helperOut = outs
-            val latch = CountDownLatch(1)
-            val t = Thread {
-                try {
-                    val r = BufferedReader(InputStreamReader(ins))
-                    while (true) {
-                        val line = r.readLine() ?: break
-                        if (line.contains("__MSREADY")) {
-                            helperReady = true
-                            latch.countDown()
-                        } else if (line.contains("__MSERR")) {
-                            helperError = line.substringAfter("__MSERR").trim()
-                            latch.countDown()
-                        } else {
-                            ackLine(line)
-                        }
-                    }
-                } catch (_: Throwable) {
-                }
-                latch.countDown()
-                if (helperStream === s) { // helper chết giữa chừng -> tạm lùi về cách khác
-                    helperReady = false
-                    helperStream = null
-                    helperOut = null
-                }
-            }
-            t.isDaemon = true
-            t.start()
-            if (latch.await(7, TimeUnit.SECONDS) && helperReady) return true
-            if (helperError.isEmpty()) helperError = "helper không phản hồi"
-            closeHelper()
-            return false
-        } catch (t: Throwable) {
-            helperError = friendly(t)
-            closeHelper()
-            return false
-        }
-    }
-
-    private fun closeHelper() {
-        helperReady = false
-        try {
-            helperOut?.write("Q\n".toByteArray())
-            helperOut?.flush()
-        } catch (_: Throwable) {
-        }
-        try {
-            helperOut?.close()
-        } catch (_: Throwable) {
-        }
-        try {
-            (helperStream as? Closeable)?.close()
-        } catch (_: Throwable) {
-        }
-        helperStream = null
-        helperOut = null
-    }
-
-    private fun ackLine(line: String) {
-        val i = line.indexOf("__MSDONE_")
-        if (i >= 0) {
-            val n = line.substring(i + 9).takeWhile { it.isDigit() }.toIntOrNull()
-            if (n != null) acks.remove(n)?.invoke()
         }
     }
 
@@ -637,86 +555,37 @@ object AdbClient {
     // ------------------------------------------------------------------ chạm
 
     /**
-     * Dựng chuỗi lệnh `sendevent` cho 1 cú chạm bằng slot RIÊNG (ngón thứ N).
+     * Gửi 1 cú chạm tại (x, y) px của màn hình đang hiển thị ([rot] = Surface.ROTATION_*, [w] x [h] = kích thước
+     * màn hình hiện tại). [done] được gọi khi đã chạm xong (để chuỗi đi TUẦN TỰ). Trả về false nếu chưa kết nối.
      *
-     * Vì sao không bị đơ: `input tap` luôn bắt đầu bằng ACTION_DOWN của "ngón số 0" trên cùng
-     * thiết bị cảm ứng -> hệ thống thấy "đang giữ tay mà lại có DOWN mới" và HỦY cử chỉ thật
-     * (đang xoay camera / kéo) của bạn. Ở đây ta ghi vào evdev kiểu đa điểm (protocol B) bằng
-     * slot cuối + tracking id riêng, nên đó chỉ là thêm 1 ngón nữa, ngón thật không bị đụng tới.
-     * Không bao giờ gửi BTN_TOUCH=0 để khỏi biến ngón thật (đang giữ) thành "hover".
+     * Ưu tiên "ngón tay phụ" (GhostTouch); không có thì rơi về `input tap` như trước.
      */
-    private fun evTap(t: TouchDev, x: Int, y: Int, rot: Int, sw: Int, sh: Int): String {
-        // kích thước + tọa độ theo hướng TỰ NHIÊN của tấm cảm ứng (dọc với điện thoại)
-        val natW = if (rot % 2 == 0) sw else sh
-        val natH = if (rot % 2 == 0) sh else sw
-        val nx: Int
-        val ny: Int
-        when (rot) {
-            1 -> { nx = y; ny = natH - x }            // ROTATION_90
-            2 -> { nx = natW - x; ny = natH - y }     // ROTATION_180
-            3 -> { nx = natW - y; ny = x }            // ROTATION_270
-            else -> { nx = x; ny = y }
-        }
-        val rx = t.minX + (nx.coerceIn(0, natW).toLong() * (t.maxX - t.minX) / natW).toInt()
-        val ry = t.minY + (ny.coerceIn(0, natH).toLong() * (t.maxY - t.minY) / natH).toInt()
-
-        val n = tidCounter.incrementAndGet()
-        val span = t.maxTid - t.minTid + 1
-        val tid = if (span > 8) t.maxTid - (n and 7) else t.minTid + (n % span)
-
-        val d = t.path
-        fun ev(type: Int, code: Int, value: Int) = "sendevent $d $type $code $value"
-        val sb = StringBuilder()
-        // nhấn xuống
-        sb.append(ev(3, 0x2f, t.slot)).append("; ")        // ABS_MT_SLOT
-        sb.append(ev(3, 0x39, tid)).append("; ")           // ABS_MT_TRACKING_ID
-        sb.append(ev(3, 0x35, rx)).append("; ")            // ABS_MT_POSITION_X
-        sb.append(ev(3, 0x36, ry)).append("; ")            // ABS_MT_POSITION_Y
-        t.pressure?.let { sb.append(ev(3, 0x3a, it)).append("; ") }
-        t.major?.let { sb.append(ev(3, 0x30, it)).append("; ") }
-        sb.append(ev(1, 0x14a, 1)).append("; ")            // BTN_TOUCH = 1 (nếu đã =1 thì bị bỏ qua)
-        sb.append(ev(0, 0, 0)).append("; ")                // SYN_REPORT
-        sb.append("sleep 0.02; ")
-        // nhả ra
-        sb.append(ev(3, 0x2f, t.slot)).append("; ")
-        sb.append(ev(3, 0x39, -1)).append("; ")
-        sb.append(ev(0, 0, 0))
-        return sb.toString()
-    }
-
-    /**
-     * Gửi 1 cú chạm. [done] được gọi khi shell báo đã chạy xong lệnh (để chuỗi đi TUẦN TỰ).
-     * Trả về false nếu chưa kết nối.
-     */
-    fun tap(x: Int, y: Int, rotation: Int, screenW: Int, screenH: Int, done: () -> Unit): Boolean {
+    fun tap(x: Int, y: Int, rot: Int, w: Int, h: Int, done: () -> Unit): Boolean {
         val o = outS
         if (state != State.CONNECTED || o == null) return false
         val id = seq.incrementAndGet()
         acks[id] = done
-        val ho = helperOut
-        if (helperReady && ho != null) {
-            // đường chính: helper bơm cảm ứng trực tiếp, chỉ cần gửi 1 dòng
+
+        val g = ghostOut
+        if (ghostReady && g != null) {
             io.execute {
                 try {
-                    ho.write("$id T $x $y\n".toByteArray())
-                    ho.flush()
+                    g.write("T $id $x $y $rot $w $h $GHOST_HOLD_MS\n".toByteArray())
+                    g.flush()
                 } catch (_: Throwable) {
-                    helperReady = false // helper rớt -> các lần sau tự dùng cách dự phòng
+                    ghostReady = false
+                    ghostNote = "ngón phụ lỗi, tạm dùng input tap"
                     acks.remove(id)?.invoke()
+                    notifyUi()
                 }
             }
             return true
         }
-        val td = touch
-        val cmd = if (td != null && screenW > 0 && screenH > 0) {
-            evTap(td, x, y, rotation and 3, screenW, screenH)
-        } else {
-            "input tap $x $y"
-        }
+
         io.execute {
             try {
                 // __MS''DONE: dấu '' để dòng lệnh bị shell "dội" lại không chứa chuỗi đánh dấu thật
-                o.write("$cmd; echo __MS''DONE_$id\n".toByteArray())
+                o.write("input tap $x $y; echo __MS''DONE_$id\n".toByteArray())
                 o.flush()
             } catch (_: Throwable) {
                 acks.remove(id)?.invoke()
