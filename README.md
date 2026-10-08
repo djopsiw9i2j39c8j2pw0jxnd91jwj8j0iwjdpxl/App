@@ -16,6 +16,14 @@ App macro chạm màn hình với nút nổi (Android 7.0+).
 
 ## Chế độ chạm
 - **Trợ năng**: dùng dịch vụ Trợ năng để chạm (mặc định, chạy mọi máy Android 7+).
-- **Gỡ lỗi WiFi** (Android 11+): app tự làm máy khách ADB qua *Gỡ lỗi không dây*, chạm bằng quyền shell: chạy 1 tiến trình helper (TouchServer, quyền shell) bơm cảm ứng trực tiếp nên mượt, không chặn tay bạn (không chạy được thì tự lùi về `input tap`). Không cần Shizuku hay app ngoài.
+- **Gỡ lỗi WiFi** (Android 11+): app tự làm máy khách ADB qua *Gỡ lỗi không dây*, chạm bằng lệnh `input tap` với quyền shell. Không cần Shizuku hay app ngoài.
   - Ghép cặp 1 lần: Tùy chọn nhà phát triển → Gỡ lỗi không dây → bật, bấm BẮT ĐẦU, chạm bong bóng → *Chế độ chạm* → *Gỡ lỗi WiFi* → *Ghép cặp*, rồi nhập cổng + mã 6 số từ hộp thoại "Ghép nối thiết bị bằng mã".
   - Cần đang kết nối Wi-Fi (không cần có internet). Mất Wi-Fi thì đổi về **Trợ năng** ngay trên bảng nổi hoặc ở màn hình chính để dùng tạm; có Wi-Fi lại thì chọn **Gỡ lỗi WiFi**, app tự nối lại.
+
+## Ngón tay phụ (sửa lỗi kẹt ngón khi dùng Gỡ lỗi WiFi)
+Trước đây lệnh `input tap` bị Android coi là một "thiết bị chạm khác" nên mỗi lần macro bấm là **huỷ cử chỉ của ngón thật** (đang xoay camera / bấm nút khác bị kẹt). Bản này sửa 2 chỗ:
+1. **FLAG_SPLIT_TOUCH** cho mọi cửa sổ nổi: 1 ngón đè nút main, ngón khác vẫn chạm được vào game (xoay cam, bấm nút khác).
+2. **GhostTouch** (`GhostTouch.java`): khi kết nối Gỡ lỗi WiFi, app chạy thêm 1 tiến trình quyền shell, ghi thẳng sự kiện đa chạm vào `/dev/input/eventX` của màn hình cảm ứng bằng 1 slot riêng -> Android thấy đó là thêm 1 ngón tay thật, ngón gốc không bị đụng tới.
+   - Trạng thái hiện trên bảng nổi / màn hình chính: `ngón tay phụ (không chặn ngón thật)` = đang dùng; `chạm bằng input tap · <lý do>` = máy không cho ghi `/dev/input` nên tự lùi về cách cũ.
+   - Nếu máy không hỗ trợ ngón phụ: dùng chế độ **Trợ năng**.
+
