@@ -3,6 +3,7 @@ package com.macrosniper.app
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Context
+import android.content.Intent
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Bitmap
@@ -17,6 +18,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -71,6 +73,13 @@ class MacroService : AccessibilityService() {
     private var nameDraft = ""
     private var listOpen = false
     private var addTargetMain = 0 // main đang được chọn để thêm nút số vào
+    private var pairOpen = false
+    private var pairPort = ""
+    private var pairCode = ""
+    private var lastAdbWarn = 0L
+    private val adbListener: () -> Unit = {
+        if (mode == Mode.EDIT && selectedId == -1) refreshPanel()
+    }
     private var logoBmp: Bitmap? = null
 
     // ---------------------------------------------------------------- vòng đời
@@ -84,6 +93,7 @@ class MacroService : AccessibilityService() {
                     } else {
                         ensureAttached()
                     }
+                    if (Store.tapMode(this@MacroService) == TAP_ADB) AdbClient.tick(applicationContext)
                 }
             } catch (_: Exception) {
             }
@@ -98,6 +108,8 @@ class MacroService : AccessibilityService() {
         density = resources.displayMetrics.density
         handler.removeCallbacks(watchdog)
         handler.postDelayed(watchdog, 1000)
+        AdbClient.listeners.remove(adbListener)
+        AdbClient.listeners.add(adbListener)
         if (Store.isRunning(this)) startOverlay()
     }
 
@@ -124,6 +136,8 @@ class MacroService : AccessibilityService() {
     }
 
     private fun shutdown() {
+        AdbClient.listeners.remove(adbListener)
+        AdbClient.disconnect()
         handler.removeCallbacks(watchdog)
         handler.removeCallbacksAndMessages(chainToken)
         mode = Mode.OFF
@@ -143,12 +157,14 @@ class MacroService : AccessibilityService() {
         selectedId = -1
         listOpen = false
         mode = Mode.RUN
+        if (Store.tapMode(this) == TAP_ADB) AdbClient.connect(applicationContext)
         rebuildAll()
     }
 
     fun stopOverlay() {
         Store.setRunning(this, false)
         cancelChain()
+        AdbClient.disconnect()
         mode = Mode.OFF
         removeAll()
     }
@@ -613,11 +629,150 @@ class MacroService : AccessibilityService() {
         }
     }
 
+    // ---- chế độ chạm: Trợ năng <-> Gỡ lỗi WiFi (đổi nhanh ngay trên bảng nổi)
+
+    private fun setTapMode(m: Int) {
+        Store.setTapMode(this, m)
+        cancelChain()
+        if (m == TAP_ADB) AdbClient.connect(applicationContext) else AdbClient.disconnect()
+        refreshPanel()
+    }
+
+    private fun numField(hint: String, value: String, onText: (String) -> Unit): EditText {
+        val et = EditText(this)
+        et.setText(value)
+        et.hint = hint
+        et.setHintTextColor(Theme.MUTED)
+        et.setTextColor(Theme.TEXT)
+        et.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f)
+        et.setSingleLine(true)
+        et.inputType = InputType.TYPE_CLASS_NUMBER
+        et.imeOptions = EditorInfo.IME_ACTION_DONE or EditorInfo.IME_FLAG_NO_EXTRACT_UI
+        et.setPadding(dp(10), 0, dp(10), 0)
+        et.background = roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.STROKE, dp(1))
+        et.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, st: Int, c1: Int, a: Int) {}
+            override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c1: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                onText(s?.toString() ?: "")
+            }
+        })
+        et.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_DONE) {
+                setPanelFocusable(false)
+                true
+            } else false
+        }
+        et.setOnTouchListener { _, e ->
+            if (e.actionMasked == MotionEvent.ACTION_DOWN) {
+                nameInput = et
+                setPanelFocusable(true)
+                handler.postDelayed({
+                    et.requestFocus()
+                    val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                    imm.showSoftInput(et, InputMethodManager.SHOW_IMPLICIT)
+                }, 150)
+            }
+            false
+        }
+        return et
+    }
+
+    private fun buildModeSection(c: LinearLayout) {
+        val cur = Store.tapMode(this)
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.addView(label("Chế độ chạm", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
+        row.addView(actionBtn("Trợ năng", cur == TAP_ACC) { setTapMode(TAP_ACC) }, weighted(dp(36), 0, dp(4)))
+        row.addView(actionBtn("Gỡ lỗi WiFi", cur == TAP_ADB) { setTapMode(TAP_ADB) }, weighted(dp(36), dp(4), 0))
+        c.addView(row)
+        if (cur != TAP_ADB) return
+
+        val st = label(AdbClient.statusText(), 12f, AdbClient.statusColor(), true)
+        st.setPadding(dp(2), dp(6), dp(2), dp(4))
+        c.addView(st)
+        if (!AdbClient.supported()) return
+
+        val btns = LinearLayout(this)
+        btns.orientation = LinearLayout.HORIZONTAL
+        val off = AdbClient.state == AdbClient.State.OFF
+        btns.addView(actionBtn("Kết nối", off) { AdbClient.connect(applicationContext) }, weighted(dp(36), 0, dp(2)))
+        btns.addView(actionBtn("Ngắt", false, true) { AdbClient.disconnect() }, weighted(dp(36), dp(2), dp(2)))
+        btns.addView(
+            actionBtn(if (pairOpen) "Ghép cặp ▴" else "Ghép cặp ▾", false) {
+                pairOpen = !pairOpen
+                refreshPanel()
+            },
+            weighted(dp(36), dp(2), 0)
+        )
+        c.addView(btns)
+
+        if (!pairOpen) return
+
+        val hint = label(
+            "Ghép cặp (làm 1 lần): bật Gỡ lỗi không dây → \"Ghép nối thiết bị bằng mã\". " +
+                    "Bảng này nổi trên Cài đặt, cứ nhập CỔNG và MÃ 6 số hiện trên hộp thoại đó.",
+            11f, Theme.MUTED
+        )
+        hint.setPadding(dp(2), dp(8), dp(2), dp(4))
+        c.addView(hint)
+
+        val pr = LinearLayout(this)
+        pr.orientation = LinearLayout.HORIZONTAL
+        pr.gravity = Gravity.CENTER_VERTICAL
+        val portEt = numField("Cổng", pairPort) { pairPort = it }
+        val codeEt = numField("Mã 6 số", pairCode) { pairCode = it }
+        val l1 = LinearLayout.LayoutParams(0, dp(40), 1f)
+        l1.setMargins(0, 0, dp(4), 0)
+        val l2 = LinearLayout.LayoutParams(0, dp(40), 1f)
+        l2.setMargins(dp(4), 0, dp(4), 0)
+        pr.addView(portEt, l1)
+        pr.addView(codeEt, l2)
+        pr.addView(actionBtn("Ghép", true) { doPair() }, LinearLayout.LayoutParams(dp(64), dp(40)))
+        c.addView(pr)
+
+        val dev = actionBtn("Mở Tùy chọn nhà phát triển", false) {
+            try {
+                val i = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(i)
+            } catch (_: Exception) {
+                toast("Không mở được Tùy chọn nhà phát triển")
+            }
+        }
+        val dl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(36))
+        dl.topMargin = dp(6)
+        c.addView(dev, dl)
+    }
+
+    private fun doPair() {
+        val port = pairPort.trim().toIntOrNull()
+        val code = pairCode.trim()
+        if (port == null || code.length < 6) {
+            toast("Nhập đúng cổng và mã 6 số trên hộp thoại ghép nối")
+            return
+        }
+        toast("Đang ghép cặp...")
+        AdbClient.pair(applicationContext, port, code) { ok, msg ->
+            toast(msg)
+            if (ok) {
+                pairOpen = false
+                pairCode = ""
+                AdbClient.connect(applicationContext)
+            }
+            if (mode == Mode.EDIT && selectedId == -1) refreshPanel()
+        }
+    }
+
     // ---- nội dung: thêm nút / lưu / chọn macro
 
     private fun buildAddContent(c: LinearLayout) {
         c.removeAllViews()
         val rowH = dp(42)
+
+        buildModeSection(c)
+        c.addView(View(this), LinearLayout.LayoutParams(1, dp(8)))
 
         val r1 = LinearLayout(this)
         r1.orientation = LinearLayout.HORIZONTAL
@@ -1098,6 +1253,28 @@ class MacroService : AccessibilityService() {
         }
         val loc = IntArray(2)
         v.getLocationOnScreen(loc)
+
+        if (Store.tapMode(this) == TAP_ADB) {
+            // chạm qua Gỡ lỗi WiFi: shell báo xong thì mới đi tiếp
+            val ok = AdbClient.tap(
+                (loc[0] + v.width / 2f).toInt(),
+                (loc[1] + v.height / 2f).toInt()
+            ) { handler.post { finish() } }
+            v.flashFx()
+            if (!ok) {
+                cancelChain()
+                val now = SystemClock.uptimeMillis()
+                if (now - lastAdbWarn > 3000) {
+                    lastAdbWarn = now
+                    toast("Gỡ lỗi WiFi chưa kết nối · chạm bong bóng, đổi sang chế độ Trợ năng để dùng tạm")
+                }
+            } else {
+                // đề phòng shell không báo lại: tự đi tiếp sau 1,5 giây
+                handler.postAtTime({ finish() }, chainToken, SystemClock.uptimeMillis() + 1500)
+            }
+            return
+        }
+
         val path = Path()
         path.moveTo(loc[0] + v.width / 2f, loc[1] + v.height / 2f)
         val stroke = GestureDescription.StrokeDescription(path, 0L, 10L)

@@ -6,6 +6,10 @@ import org.json.JSONObject
 
 enum class Kind { NUM, MAIN }
 
+/** Cách app tạo cú chạm. */
+const val TAP_ACC = 0 // dịch vụ Trợ năng (dispatchGesture)
+const val TAP_ADB = 1 // Gỡ lỗi không dây (ADB tự nhúng, lệnh input tap)
+
 /** Kiểu kích hoạt của nút main. */
 const val TRIG_PRESS = 0    // chạy 1 lần khi ấn xuống
 const val TRIG_RELEASE = 1  // chạy 1 lần khi thả tay
@@ -37,6 +41,12 @@ object Store {
 
     fun setRunning(ctx: Context, v: Boolean) {
         p(ctx).edit().putBoolean("running", v).apply()
+    }
+
+    fun tapMode(ctx: Context): Int = p(ctx).getInt("tapMode", TAP_ACC)
+
+    fun setTapMode(ctx: Context, m: Int) {
+        p(ctx).edit().putInt("tapMode", m).apply()
     }
 
     fun bubblePos(ctx: Context): Pair<Int, Int>? {
