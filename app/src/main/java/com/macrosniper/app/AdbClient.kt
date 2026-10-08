@@ -300,6 +300,8 @@ object AdbClient {
             notifyUi()
             return
         }
+        // Chế độ Trợ năng tuyệt đối không được dính ADB / GhostTouch (nó giành cảm ứng của máy)
+        if (Store.tapMode(app) != TAP_ADB) return
         synchronized(this) {
             if (state != State.OFF) return
             state = State.CONNECTING
@@ -313,6 +315,10 @@ object AdbClient {
                 val f = discover(app, "_adb-tls-connect._tcp", 8000L)
                     ?: throw IllegalStateException("không thấy dịch vụ Gỡ lỗi không dây (đã bật chưa? có Wi-Fi chưa?)")
                 m.connect("127.0.0.1", f.port)
+                if (!wantUp) { // trong lúc nối, người dùng đã đổi sang Trợ năng / bấm Ngắt
+                    closeQuietly()
+                    return@execute
+                }
                 val st = m.openStream("shell:")
                 val ins = st.openInputStream()
                 val outs = st.openOutputStream()
@@ -540,14 +546,28 @@ object AdbClient {
         }
     }
 
-    private fun closeGhost() {
+    /** Lấy ra và xoá tham chiếu ngón phụ (nhanh, an toàn trên luồng chính). */
+    private fun detachGhost(): Pair<OutputStream?, Any?> {
         ghostReady = false
         takeover = false
         grabbed = false
         grabNote = ""
-        val o = ghostOut
+        val r = Pair(ghostOut, ghostStream)
+        ghostOut = null
+        ghostStream = null
+        return r
+    }
+
+    /**
+     * Tắt tiến trình GhostTouch (CHẶN, phải gọi ở luồng nền).
+     * Trước đây phần này chạy thẳng trên luồng chính -> NetworkOnMainThreadException bị nuốt im lặng
+     * -> lệnh thoát không bao giờ được gửi -> GhostTouch vẫn sống và vẫn GIÀNH ĐỘC QUYỀN màn hình cảm ứng
+     * (EVIOCGRAB) dù đã chuyển sang chế độ Trợ năng. Đó là lý do Trợ năng "nháy nhưng không click".
+     */
+    private fun closeGhostIo(o: OutputStream?, st: Any?) {
         try {
-            o?.write("Q\n".toByteArray())
+            // "P 0": huỷ tiếp quản (nhả độc quyền cảm ứng) trước, rồi "Q": thoát
+            o?.write("P 0 0 1 1\nQ\n".toByteArray())
             o?.flush()
         } catch (_: Throwable) {
         }
@@ -556,30 +576,45 @@ object AdbClient {
         } catch (_: Throwable) {
         }
         try {
-            (ghostStream as? Closeable)?.close()
+            (st as? Closeable)?.close()
         } catch (_: Throwable) {
         }
-        ghostStream = null
-        ghostOut = null
+    }
+
+    private fun closeGhost() {
+        val (o, st) = detachGhost()
+        if (o == null && st == null) return
+        val t = Thread { closeGhostIo(o, st) }
+        t.isDaemon = true
+        t.start()
     }
 
     private fun closeQuietly() {
-        closeGhost()
-        try {
-            outS?.close()
-        } catch (_: Throwable) {
-        }
-        try {
-            (stream as? Closeable)?.close()
-        } catch (_: Throwable) {
-        }
-        try {
-            (mgr as? Closeable)?.close()
-        } catch (_: Throwable) {
-        }
+        val (go, gst) = detachGhost()
+        val o = outS
+        val st = stream
+        val m = mgr
         mgr = null // lần sau dựng lại (khoá đã lưu nên không phải ghép cặp lại)
         stream = null
         outS = null
+        // đóng theo thứ tự (ngón phụ trước, rồi shell, rồi kết nối) và KHÔNG chặn luồng chính
+        val t = Thread {
+            closeGhostIo(go, gst)
+            try {
+                o?.close()
+            } catch (_: Throwable) {
+            }
+            try {
+                (st as? Closeable)?.close()
+            } catch (_: Throwable) {
+            }
+            try {
+                (m as? Closeable)?.close()
+            } catch (_: Throwable) {
+            }
+        }
+        t.isDaemon = true
+        t.start()
         val pending = acks.values.toList()
         acks.clear()
         for (a in pending) {

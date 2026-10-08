@@ -163,7 +163,7 @@ class MacroService : AccessibilityService() {
         selectedId = -1
         listOpen = false
         mode = Mode.RUN
-        if (Store.tapMode(this) == TAP_ADB) AdbClient.connect(applicationContext)
+        if (Store.tapMode(this) == TAP_ADB) AdbClient.connect(applicationContext) else AdbClient.disconnect()
         rebuildAll()
     }
 
