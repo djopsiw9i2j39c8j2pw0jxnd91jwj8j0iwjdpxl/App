@@ -2,6 +2,7 @@ package com.macrosniper.app
 
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Activity
+import android.Manifest
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
@@ -18,6 +19,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
 import android.view.accessibility.AccessibilityManager
+import android.text.InputType
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -189,13 +192,82 @@ class MainActivity : Activity() {
         ar.addView(db, bl2)
         adbBox.addView(ar)
         val an = text(
-            "Cần Android 11+. Ghép cặp lần đầu: bật Tùy chọn nhà phát triển → Gỡ lỗi không dây, bấm BẮT ĐẦU, " +
-                    "chạm bong bóng → Chế độ chạm → Ghép cặp (bảng nổi nằm trên Cài đặt nên nhập mã được). " +
-                    "Mất Wi-Fi thì đổi về Trợ năng ngay trên bảng nổi hoặc ở đây.",
+            "Cần Android 11+. Ghép cặp (làm 1 lần): vào Tùy chọn nhà phát triển → Gỡ lỗi không dây → " +
+                    "\"Ghép nối thiết bị bằng mã\" và để hộp thoại đó MỞ. Chỉ cần nhập MÃ 6 số, app tự tìm cổng. " +
+                    "Vì hộp thoại nằm ở Cài đặt, hãy bấm \"Gửi thông báo nhập mã\" rồi gõ mã ngay trong thông báo " +
+                    "(hoặc dùng chia đôi màn hình để gõ ở ô dưới). " +
+                    "Mất Wi-Fi thì đổi về Trợ năng để dùng tạm.",
             11f, Theme.MUTED
         )
-        an.setPadding(0, dp(8), 0, 0)
+        an.setPadding(0, dp(10), 0, 0)
         adbBox.addView(an)
+
+        val pr = LinearLayout(this)
+        pr.orientation = LinearLayout.HORIZONTAL
+        pr.gravity = Gravity.CENTER_VERTICAL
+        val codeInput = EditText(this)
+        codeInput.hint = "Mã 6 số"
+        codeInput.setHintTextColor(Theme.MUTED)
+        codeInput.setTextColor(Theme.TEXT)
+        codeInput.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 15f)
+        codeInput.setSingleLine(true)
+        codeInput.inputType = InputType.TYPE_CLASS_NUMBER
+        codeInput.setPadding(dp(12), 0, dp(12), 0)
+        codeInput.background = roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.STROKE, dp(1))
+        val pb = text("Ghép cặp", 13f, Color.parseColor("#0B120A"), true)
+        pb.gravity = Gravity.CENTER
+        pb.background = roundedBg(Theme.ACCENT, dp(12).toFloat())
+        pb.isClickable = true
+        pressFx(pb)
+        pb.setOnClickListener {
+            val code = codeInput.text.toString().trim()
+            if (code.length < 6) {
+                Toast.makeText(this, "Nhập mã 6 số trên hộp thoại ghép nối", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "Đang ghép cặp...", Toast.LENGTH_SHORT).show()
+                AdbClient.pair(applicationContext, code) { ok, msg ->
+                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                    if (ok) {
+                        codeInput.setText("")
+                        AdbClient.connect(applicationContext)
+                    }
+                    refreshMode()
+                }
+            }
+        }
+        val pl1 = LinearLayout.LayoutParams(0, dp(44), 1f)
+        pl1.setMargins(0, 0, dp(6), 0)
+        pr.addView(codeInput, pl1)
+        pr.addView(pb, LinearLayout.LayoutParams(dp(104), dp(44)))
+        val prl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        prl.topMargin = dp(10)
+        adbBox.addView(pr, prl)
+
+        val nb = text("Gửi thông báo nhập mã", 13f, Theme.ACCENT, true)
+        nb.gravity = Gravity.CENTER
+        nb.background = roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.STROKE, dp(1))
+        nb.isClickable = true
+        pressFx(nb)
+        nb.setOnClickListener { sendPairNotification() }
+        val nbl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40))
+        nbl.topMargin = dp(8)
+        adbBox.addView(nb, nbl)
+
+        val ob = text("Mở Tùy chọn nhà phát triển", 13f, Theme.ACCENT, true)
+        ob.gravity = Gravity.CENTER
+        ob.background = roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.STROKE, dp(1))
+        ob.isClickable = true
+        pressFx(ob)
+        ob.setOnClickListener {
+            try {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
+            } catch (_: Exception) {
+                Toast.makeText(this, "Không mở được Tùy chọn nhà phát triển", Toast.LENGTH_SHORT).show()
+            }
+        }
+        val obl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40))
+        obl.topMargin = dp(6)
+        adbBox.addView(ob, obl)
         modeCard.addView(adbBox)
         val mcl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         mcl.topMargin = dp(16)
@@ -265,6 +337,30 @@ class MainActivity : Activity() {
     override fun onPause() {
         AdbClient.listeners.remove(adbListener)
         super.onPause()
+    }
+
+    /** Gửi thông báo có ô nhập mã; xin quyền thông báo (Android 13+) nếu chưa có. */
+    private fun sendPairNotification() {
+        if (!PairNotif.canPost(this)) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7)
+            return
+        }
+        if (PairNotif.show(applicationContext)) {
+            Toast.makeText(this, "Đã gửi thông báo · mở Gỡ lỗi không dây → Ghép nối bằng mã rồi nhập mã trong thông báo", Toast.LENGTH_LONG).show()
+        } else {
+            Toast.makeText(this, "Chế độ này cần Android 11 trở lên", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 7) {
+            if (grantResults.isNotEmpty() && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                sendPairNotification()
+            } else {
+                Toast.makeText(this, "Chưa cấp quyền thông báo nên không gửi được", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     private fun setTapModeUi(m: Int) {

@@ -74,7 +74,6 @@ class MacroService : AccessibilityService() {
     private var listOpen = false
     private var addTargetMain = 0 // main đang được chọn để thêm nút số vào
     private var pairOpen = false
-    private var pairPort = ""
     private var pairCode = ""
     private var lastAdbWarn = 0L
     private val adbListener: () -> Unit = {
@@ -711,8 +710,9 @@ class MacroService : AccessibilityService() {
         if (!pairOpen) return
 
         val hint = label(
-            "Ghép cặp (làm 1 lần): bật Gỡ lỗi không dây → \"Ghép nối thiết bị bằng mã\". " +
-                    "Bảng này nổi trên Cài đặt, cứ nhập CỔNG và MÃ 6 số hiện trên hộp thoại đó.",
+            "Ghép cặp (làm 1 lần): vào Tùy chọn nhà phát triển → Gỡ lỗi không dây → \"Ghép nối thiết bị bằng mã\" " +
+                    "và để hộp thoại đó MỞ. Chỉ cần nhập MÃ 6 số (app tự tìm cổng). " +
+                    "Gõ ở ô dưới, hoặc bấm \"Gửi thông báo nhập mã\" rồi gõ mã ngay trong thông báo.",
             11f, Theme.MUTED
         )
         hint.setPadding(dp(2), dp(8), dp(2), dp(4))
@@ -721,16 +721,17 @@ class MacroService : AccessibilityService() {
         val pr = LinearLayout(this)
         pr.orientation = LinearLayout.HORIZONTAL
         pr.gravity = Gravity.CENTER_VERTICAL
-        val portEt = numField("Cổng", pairPort) { pairPort = it }
         val codeEt = numField("Mã 6 số", pairCode) { pairCode = it }
-        val l1 = LinearLayout.LayoutParams(0, dp(40), 1f)
-        l1.setMargins(0, 0, dp(4), 0)
         val l2 = LinearLayout.LayoutParams(0, dp(40), 1f)
-        l2.setMargins(dp(4), 0, dp(4), 0)
-        pr.addView(portEt, l1)
+        l2.setMargins(0, 0, dp(6), 0)
         pr.addView(codeEt, l2)
-        pr.addView(actionBtn("Ghép", true) { doPair() }, LinearLayout.LayoutParams(dp(64), dp(40)))
+        pr.addView(actionBtn("Ghép", true) { doPair() }, LinearLayout.LayoutParams(dp(72), dp(40)))
         c.addView(pr)
+
+        val notif = actionBtn("Gửi thông báo nhập mã", false) { sendPairNotif() }
+        val nl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(36))
+        nl.topMargin = dp(6)
+        c.addView(notif, nl)
 
         val dev = actionBtn("Mở Tùy chọn nhà phát triển", false) {
             try {
@@ -746,15 +747,22 @@ class MacroService : AccessibilityService() {
         c.addView(dev, dl)
     }
 
+    private fun sendPairNotif() {
+        if (PairNotif.show(applicationContext)) {
+            toast("Đã gửi thông báo · kéo thanh thông báo xuống, bấm \"Nhập mã\"")
+        } else {
+            toast("Cần cấp quyền thông báo: mở app chính → Chế độ chạm → bấm \"Gửi thông báo nhập mã\" 1 lần")
+        }
+    }
+
     private fun doPair() {
-        val port = pairPort.trim().toIntOrNull()
         val code = pairCode.trim()
-        if (port == null || code.length < 6) {
-            toast("Nhập đúng cổng và mã 6 số trên hộp thoại ghép nối")
+        if (code.length < 6) {
+            toast("Nhập mã 6 số trên hộp thoại ghép nối")
             return
         }
         toast("Đang ghép cặp...")
-        AdbClient.pair(applicationContext, port, code) { ok, msg ->
+        AdbClient.pair(applicationContext, code) { ok, msg ->
             toast(msg)
             if (ok) {
                 pairOpen = false

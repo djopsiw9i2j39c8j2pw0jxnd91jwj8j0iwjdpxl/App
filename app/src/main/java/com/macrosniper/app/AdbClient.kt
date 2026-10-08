@@ -211,23 +211,46 @@ object AdbClient {
     // ------------------------------------------------------------------ ghép cặp / kết nối
 
     /**
-     * Ghép cặp (làm 1 lần): [port] và [code] là cổng + mã 6 số hiện trên hộp thoại
-     * "Ghép nối thiết bị bằng mã ghép nối" trong Tùy chọn nhà phát triển → Gỡ lỗi không dây.
+     * Ghép cặp (làm 1 lần). Chỉ cần [code] = mã 6 số trên hộp thoại "Ghép nối thiết bị bằng mã"
+     * (hộp thoại phải đang MỞ). App tự dò cổng ghép cặp bằng mDNS.
      */
-    fun pair(ctx: Context, port: Int, code: String, done: (Boolean, String) -> Unit) {
+    fun pair(ctx: Context, code: String, done: (Boolean, String) -> Unit) {
         val app = ctx.applicationContext
         bg.execute {
             var ok = false
             var msg: String
             try {
-                ok = manager(app).pair("127.0.0.1", port, code)
-                msg = if (ok) "Ghép cặp thành công" else "Ghép cặp thất bại · kiểm tra lại cổng và mã"
+                val f = discover(app, "_adb-tls-pairing._tcp", 5000L)
+                if (f == null) {
+                    msg = "Chưa thấy hộp thoại ghép nối. Vào Gỡ lỗi không dây → \"Ghép nối thiết bị bằng mã\", " +
+                            "để hộp thoại đó MỞ rồi mới ghép (cần bật Wi-Fi)."
+                } else {
+                    val m = manager(app)
+                    var err = ""
+                    ok = try {
+                        m.pair("127.0.0.1", f.port, code)
+                    } catch (t: Throwable) {
+                        err = t.message ?: t.javaClass.simpleName
+                        false
+                    }
+                    if (!ok && f.host != null) {
+                        ok = try {
+                            m.pair(f.host, f.port, code)
+                        } catch (t: Throwable) {
+                            err = t.message ?: t.javaClass.simpleName
+                            false
+                        }
+                    }
+                    msg = if (ok) "Ghép cặp thành công" else
+                        "Ghép cặp thất bại · sai mã hoặc hộp thoại đã đóng, hãy mở lại để lấy mã mới" +
+                                (if (err.isNotEmpty()) " ($err)" else "")
+                }
             } catch (t: Throwable) {
                 msg = "Lỗi ghép cặp: " + (t.message ?: t.javaClass.simpleName)
             }
             val r = ok
-            val m = msg
-            ui.post { done(r, m) }
+            val m2 = msg
+            ui.post { done(r, m2) }
         }
     }
 
@@ -249,9 +272,9 @@ object AdbClient {
         bg.execute {
             try {
                 val m = manager(app)
-                val port = discoverConnectPort(app, 8000L)
+                val f = discover(app, "_adb-tls-connect._tcp", 8000L)
                     ?: throw IllegalStateException("không thấy dịch vụ Gỡ lỗi không dây (đã bật chưa? có Wi-Fi chưa?)")
-                m.connect("127.0.0.1", port)
+                m.connect("127.0.0.1", f.port)
                 val st = m.openStream("shell:")
                 val ins = st.openInputStream()
                 val outs = st.openOutputStream()
@@ -272,11 +295,13 @@ object AdbClient {
         }
     }
 
+    private class Found(val port: Int, val host: String?)
+
     /**
-     * Tự dò cổng kết nối của Gỡ lỗi không dây bằng mDNS (dịch vụ _adb-tls-connect._tcp).
+     * Dò dịch vụ mDNS [type] (_adb-tls-connect._tcp hoặc _adb-tls-pairing._tcp).
      * Chỉ nhận dịch vụ của CHÍNH máy này (tránh nhầm máy khác trong cùng mạng Wi-Fi).
      */
-    private fun discoverConnectPort(app: Context, timeoutMs: Long): Int? {
+    private fun discover(app: Context, type: String, timeoutMs: Long): Found? {
         val nsd = app.getSystemService(Context.NSD_SERVICE) as NsdManager
         val locals = HashSet<String>()
         try {
@@ -289,7 +314,7 @@ object AdbClient {
         } catch (_: Throwable) {
         }
         val latch = CountDownLatch(1)
-        var found: Int? = null
+        var found: Found? = null
         val listener = object : NsdManager.DiscoveryListener {
             override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) {
                 latch.countDown()
@@ -301,26 +326,40 @@ object AdbClient {
             override fun onServiceLost(serviceInfo: NsdServiceInfo?) {}
             override fun onServiceFound(serviceInfo: NsdServiceInfo?) {
                 if (serviceInfo == null) return
-                try {
-                    nsd.resolveService(serviceInfo, object : NsdManager.ResolveListener {
-                        override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {}
-                        override fun onServiceResolved(serviceInfo: NsdServiceInfo?) {
-                            if (serviceInfo == null || found != null) return
-                            val h = serviceInfo.host
-                            val addr = h?.hostAddress?.substringBefore('%')
-                            val mine = h == null || h.isLoopbackAddress || (addr != null && locals.contains(addr))
-                            if (mine) {
-                                found = serviceInfo.port
-                                latch.countDown()
-                            }
+                val rl = object : NsdManager.ResolveListener {
+                    private var tries = 0
+                    override fun onResolveFailed(info: NsdServiceInfo?, errorCode: Int) {
+                        // đang resolve dịch vụ khác -> thử lại sau chút
+                        if (errorCode == NsdManager.FAILURE_ALREADY_ACTIVE && tries++ < 8 && found == null) {
+                            val self = this
+                            ui.postDelayed({
+                                try {
+                                    nsd.resolveService(serviceInfo, self)
+                                } catch (_: Throwable) {
+                                }
+                            }, 300)
                         }
-                    })
+                    }
+
+                    override fun onServiceResolved(info: NsdServiceInfo?) {
+                        if (info == null || found != null) return
+                        val h = info.host
+                        val addr = h?.hostAddress?.substringBefore('%')
+                        val mine = h == null || h.isLoopbackAddress || (addr != null && locals.contains(addr))
+                        if (mine) {
+                            found = Found(info.port, addr)
+                            latch.countDown()
+                        }
+                    }
+                }
+                try {
+                    nsd.resolveService(serviceInfo, rl)
                 } catch (_: Throwable) {
                 }
             }
         }
         try {
-            nsd.discoverServices("_adb-tls-connect._tcp", NsdManager.PROTOCOL_DNS_SD, listener)
+            nsd.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, listener)
             latch.await(timeoutMs, TimeUnit.MILLISECONDS)
         } catch (_: Throwable) {
         }
