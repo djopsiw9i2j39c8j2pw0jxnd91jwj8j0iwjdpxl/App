@@ -45,7 +45,7 @@ object PairNotif {
         val text = status ?: "Mở Gỡ lỗi không dây → \"Ghép nối thiết bị bằng mã\", rồi bấm \"Nhập mã\" ở đây và gõ mã 6 số."
         val n = Notification.Builder(ctx, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_menu_edit)
-            .setContentTitle("Macro Sniper · Ghép cặp")
+            .setContentTitle("Macro Touch · Ghép cặp")
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
             .addAction(action)
@@ -63,7 +63,7 @@ object PairNotif {
         ensureChannel(nm)
         val n = Notification.Builder(ctx, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_menu_edit)
-            .setContentTitle("Macro Sniper · Ghép cặp")
+            .setContentTitle("Macro Touch · Ghép cặp")
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setOnlyAlertOnce(true)

@@ -291,7 +291,7 @@ class MainActivity : Activity() {
         guide.background = roundedBg(Color.parseColor("#0FFFFFFF"), dp(18).toFloat(), Color.parseColor("#1FFFFFFF"), dp(1))
         guide.addView(text("HƯỚNG DẪN NHANH", 12f, Theme.ACCENT, true))
         val steps = listOf(
-            "1.  Bật dịch vụ \"Macro Sniper\" trong Cài đặt → Trợ năng.",
+            "1.  Bật dịch vụ \"Macro Touch\" trong Cài đặt → Trợ năng.",
             "2.  Quay lại đây, bấm BẮT ĐẦU. Bong bóng logo sẽ nổi trên màn hình (kéo thả được).",
             "3.  Chạm bong bóng để mở bảng setup: tạo nút trung tâm main1, rồi chọn main đó để thêm nút số 1, 2, 3... (mỗi main có số riêng: main2 → 1, 2...).",
             "4.  Kéo các nút đến đúng vị trí cần bấm, chạm vào nút để chỉnh size / độ trong (kéo về 0 là tàng hình) / tốc độ. Lúc setup nút luôn hiện tối thiểu 20%.",
@@ -306,7 +306,7 @@ class MainActivity : Activity() {
             guide.addView(t)
         }
         val note = text(
-            "Android 13+ cài từ file APK: nếu công tắc Trợ năng bị mờ, vào Cài đặt → Ứng dụng → Macro Sniper → ⋮ → \"Cho phép cài đặt bị hạn chế\", rồi bật lại.",
+            "Android 13+ cài từ file APK: nếu công tắc Trợ năng bị mờ, vào Cài đặt → Ứng dụng → Macro Touch → ⋮ → \"Cho phép cài đặt bị hạn chế\", rồi bật lại.",
             12f, Theme.MUTED
         )
         note.setPadding(0, dp(14), 0, 0)
@@ -475,8 +475,8 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Bật dịch vụ Trợ năng")
             .setMessage(
-                "Macro Sniper cần quyền Trợ năng để hiển thị nút nổi và tự chạm màn hình.\n\n" +
-                        "Vào Cài đặt → Trợ năng → Ứng dụng đã tải xuống → Macro Sniper → Bật.\n\n" +
+                "Macro Touch cần quyền Trợ năng để hiển thị nút nổi và tự chạm màn hình.\n\n" +
+                        "Vào Cài đặt → Trợ năng → Ứng dụng đã tải xuống → Macro Touch → Bật.\n\n" +
                         "Nếu công tắc bị mờ (Android 13+): mở \"Thông tin ứng dụng\" → ⋮ → \"Cho phép cài đặt bị hạn chế\", rồi bật lại."
             )
             .setPositiveButton("Mở Cài đặt Trợ năng") { _, _ ->
