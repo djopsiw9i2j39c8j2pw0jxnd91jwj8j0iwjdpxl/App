@@ -316,7 +316,7 @@ class MainActivity : Activity() {
         col.addView(guide, gl)
 
         val warn = text(
-            "Lưu ý: dùng công cụ tự động trong game có thể vi phạm điều khoản của nhà phát hành. Hãy tự cân nhắc rủi ro.",
+            "Lưu ý: công cụ này chỉ là một dạng macro có các chức năng touch tương tự như panda touch pro.",
             11f, Theme.MUTED
         )
         warn.gravity = Gravity.CENTER
