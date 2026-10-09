@@ -240,6 +240,59 @@ class BubbleView(ctx: Context, private val logo: Bitmap?) : View(ctx) {
     }
 }
 
+/** Tâm ảo ở giữa màn hình + (tuỳ chọn) vòng tròn quanh tâm. Mọi kích thước tính bằng px. */
+class CrosshairView(ctx: Context) : View(ctx) {
+    var showCross = true
+    var crossPx = 0f
+    var crossAlpha = 0.9f
+    var showRing = false
+    var ringPx = 0f      // đường kính vòng
+    var strokePx = 2f
+    var ringAlpha = 0.7f
+
+    private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+
+    /** Vẽ 2 lớp (viền tối mờ phía dưới) để nhìn rõ trên mọi nền game. */
+    private fun stroke(c: Canvas, w: Float, a: Float, draw: (Paint) -> Unit) {
+        p.strokeWidth = w + 2f * resources.displayMetrics.density
+        p.color = Color.BLACK
+        p.alpha = (a * 110).toInt()
+        draw(p)
+        p.strokeWidth = w
+        p.color = Theme.ACCENT
+        p.alpha = (a * 255).toInt()
+        draw(p)
+    }
+
+    override fun onDraw(c: Canvas) {
+        val cx = width / 2f
+        val cy = height / 2f
+        val d = resources.displayMetrics.density
+        if (showRing && ringPx > 0f) {
+            stroke(c, strokePx, ringAlpha) { c.drawCircle(cx, cy, ringPx / 2f - strokePx / 2f, it) }
+        }
+        if (showCross && crossPx > 0f) {
+            val r = crossPx / 2f
+            val gap = r * 0.28f
+            val w = maxOf(1.5f * d, r * 0.09f)
+            stroke(c, w, crossAlpha) {
+                c.drawLine(cx - r, cy, cx - gap, cy, it)
+                c.drawLine(cx + gap, cy, cx + r, cy, it)
+                c.drawLine(cx, cy - r, cx, cy - gap, it)
+                c.drawLine(cx, cy + gap, cx, cy + r, it)
+            }
+            val dot = maxOf(1.6f * d, r * 0.1f)
+            fill.color = Color.BLACK
+            fill.alpha = (crossAlpha * 110).toInt()
+            c.drawCircle(cx, cy, dot + d, fill)
+            fill.color = Theme.ACCENT
+            fill.alpha = (crossAlpha * 255).toInt()
+            c.drawCircle(cx, cy, dot, fill)
+        }
+    }
+}
+
 /**
  * Kéo thả một cửa sổ nổi. Chạm nhẹ (không kéo) -> onTap.
  * target: view thật sự được thêm vào WindowManager (mặc định chính view đang chạm).

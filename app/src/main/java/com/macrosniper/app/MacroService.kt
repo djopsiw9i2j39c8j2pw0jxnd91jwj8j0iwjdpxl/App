@@ -79,6 +79,8 @@ class MacroService : AccessibilityService() {
     private var builtSize: Pair<Int, Int>? = null // cỡ màn hình lúc dựng overlay
     private var backdropLp: WindowManager.LayoutParams? = null
     private var bubbleLp: WindowManager.LayoutParams? = null
+    private var crossView: CrosshairView? = null
+    private var crossLp: WindowManager.LayoutParams? = null
     private var panelW = 0
     private var missTicks = 0 // số nhịp watchdog liên tiếp thấy cửa sổ nổi bị mất
     private var pairOpen = false
@@ -347,6 +349,8 @@ class MacroService : AccessibilityService() {
         backdropLp = null
         bubble = null
         bubbleLp = null
+        crossView = null
+        crossLp = null
         panelRoot = null
         panelLp = null
         panelContent = null
@@ -516,6 +520,7 @@ class MacroService : AccessibilityService() {
         // thứ tự cửa sổ (dưới -> trên): nền, các nút, bảng, bong bóng. Nền + bảng luôn có sẵn (ẩn khi chạy macro)
         // nên vào/ra setup chỉ đổi kích thước / hiển thị, không phải gắn lại cửa sổ.
         addBackdrop()
+        addCrosshair()
         for (b in buttons) addButton(b, sw, sh)
         addPanel(sw, sh)
         addBubble(sw, sh)
@@ -534,6 +539,124 @@ class MacroService : AccessibilityService() {
         }
         bubble?.editing = editing
         setPanelShown(editing, animate)
+    }
+
+    // ---------------------------------------------------------------- tâm ảo + vòng tròn
+
+    private fun crossSidePx(): Int {
+        val c = if (Store.crossOn(this)) dp(Store.crossSize(this)) else 0
+        val r = if (Store.ringOn(this)) dp(Store.ringSize(this)) else 0
+        return maxOf(c, r, dp(8)) + dp(6)
+    }
+
+    private fun styleCross(v: CrosshairView) {
+        v.showCross = Store.crossOn(this)
+        v.crossPx = dp(Store.crossSize(this)).toFloat()
+        v.crossAlpha = Store.crossAlpha(this) / 100f
+        v.showRing = Store.ringOn(this)
+        v.ringPx = dp(Store.ringSize(this)).toFloat()
+        v.strokePx = dp(Store.ringStroke(this)).toFloat()
+        v.ringAlpha = Store.ringAlpha(this) / 100f
+        v.invalidate()
+    }
+
+    private fun placeCross(lp: WindowManager.LayoutParams) {
+        val (sw, sh) = screenSize()
+        val side = crossSidePx()
+        lp.width = side
+        lp.height = side
+        lp.x = sw / 2 - side / 2
+        lp.y = sh / 2 - side / 2
+    }
+
+    private fun addCrosshair() {
+        if (!Store.crossOn(this) && !Store.ringOn(this)) return
+        val v = CrosshairView(this)
+        styleCross(v)
+        val lp = baseLp(crossSidePx(), crossSidePx(), false) // không nhận chạm, cú chạm đi xuyên xuống game
+        placeCross(lp)
+        crossView = v
+        crossLp = lp
+        addOverlay(v, lp)
+    }
+
+    /** Cài đặt tâm / vòng đổi: chỉ gắn, gỡ hoặc vẽ lại đúng cửa sổ tâm, không đụng phần còn lại. */
+    private fun updateCrosshair() {
+        val want = Store.crossOn(this) || Store.ringOn(this)
+        val v = crossView
+        val lp = crossLp
+        if (!want) {
+            if (v != null) {
+                live.removeAll { it.first === v }
+                try {
+                    wm.removeViewImmediate(v)
+                } catch (_: Exception) {
+                }
+            }
+            crossView = null
+            crossLp = null
+            return
+        }
+        if (v == null || lp == null) {
+            addCrosshair()
+            crossLp?.let { keepChromeOnTop(it) }
+            return
+        }
+        styleCross(v)
+        placeCross(lp)
+        updateWin(v, lp)
+    }
+
+    private fun toggleRow(name: String, on: Boolean, onChange: (Boolean) -> Unit): View {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.addView(label(name, 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
+        row.addView(actionBtn("Bật", on, false) { onChange(true) }, weighted(dp(34), 0, dp(4)))
+        row.addView(actionBtn("Tắt", !on, false) { onChange(false) }, weighted(dp(34), dp(4), 0))
+        return row
+    }
+
+    private fun buildCrossSection(c: LinearLayout) {
+        val lpRow = {
+            val l = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            l.topMargin = dp(6)
+            l
+        }
+        c.addView(toggleRow("Tâm ảo", Store.crossOn(this)) {
+            Store.setCrossOn(this, it)
+            updateCrosshair()
+            refreshPanel()
+        }, lpRow())
+        if (Store.crossOn(this)) {
+            c.addView(sliderRow("Kích thước", 8, 100, Store.crossSize(this), { "${it}dp" }) { v, done ->
+                Store.setCrossSize(this, v)
+                updateCrosshair()
+            })
+            c.addView(sliderRow("Độ mờ", 5, 100, Store.crossAlpha(this), { "$it%" }) { v, done ->
+                Store.setCrossAlpha(this, v)
+                updateCrosshair()
+            })
+        }
+        c.addView(toggleRow("Vòng quanh tâm", Store.ringOn(this)) {
+            Store.setRingOn(this, it)
+            updateCrosshair()
+            refreshPanel()
+        }, lpRow())
+        if (Store.ringOn(this)) {
+            c.addView(sliderRow("Độ to nhỏ", 30, 500, Store.ringSize(this), { "${it}dp" }) { v, done ->
+                Store.setRingSize(this, v)
+                updateCrosshair()
+            })
+            c.addView(sliderRow("Nét vòng", 1, 16, Store.ringStroke(this), { "${it}dp" }) { v, done ->
+                Store.setRingStroke(this, v)
+                updateCrosshair()
+            })
+            c.addView(sliderRow("Độ mờ vòng", 5, 100, Store.ringAlpha(this), { "$it%" }) { v, done ->
+                Store.setRingAlpha(this, v)
+                updateCrosshair()
+            })
+        }
     }
 
     private fun addBackdrop() {
@@ -1136,6 +1259,8 @@ class MacroService : AccessibilityService() {
         val rowH = dp(42)
 
         buildModeSection(c)
+        c.addView(View(this), LinearLayout.LayoutParams(1, dp(8)))
+        buildCrossSection(c)
         c.addView(View(this), LinearLayout.LayoutParams(1, dp(8)))
 
         val r1 = LinearLayout(this)

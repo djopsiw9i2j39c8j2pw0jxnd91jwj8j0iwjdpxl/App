@@ -60,6 +60,23 @@ object Store {
         p(ctx).edit().putBoolean("earlyTake", v).apply()
     }
 
+    // ---- Tâm ảo (crosshair) + vòng tròn quanh tâm: cài đặt chung, không gắn với từng macro
+    fun crossOn(ctx: Context) = p(ctx).getBoolean("crossOn", false)
+    fun crossSize(ctx: Context) = p(ctx).getInt("crossSize", 28)       // dp, đường kính hình tâm
+    fun crossAlpha(ctx: Context) = p(ctx).getInt("crossAlpha", 90)     // %
+    fun ringOn(ctx: Context) = p(ctx).getBoolean("ringOn", false)
+    fun ringSize(ctx: Context) = p(ctx).getInt("ringSize", 120)        // dp, đường kính vòng tròn
+    fun ringStroke(ctx: Context) = p(ctx).getInt("ringStroke", 2)      // dp, độ dày nét
+    fun ringAlpha(ctx: Context) = p(ctx).getInt("ringAlpha", 70)       // %
+
+    fun setCrossOn(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("crossOn", v).apply()
+    fun setCrossSize(ctx: Context, v: Int) = p(ctx).edit().putInt("crossSize", v).apply()
+    fun setCrossAlpha(ctx: Context, v: Int) = p(ctx).edit().putInt("crossAlpha", v).apply()
+    fun setRingOn(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("ringOn", v).apply()
+    fun setRingSize(ctx: Context, v: Int) = p(ctx).edit().putInt("ringSize", v).apply()
+    fun setRingStroke(ctx: Context, v: Int) = p(ctx).edit().putInt("ringStroke", v).apply()
+    fun setRingAlpha(ctx: Context, v: Int) = p(ctx).edit().putInt("ringAlpha", v).apply()
+
     /** Vị trí bong bóng, nhớ riêng cho hướng dọc / ngang. */
     fun bubblePos(ctx: Context, land: Boolean): Pair<Int, Int>? {
         val s = p(ctx)
