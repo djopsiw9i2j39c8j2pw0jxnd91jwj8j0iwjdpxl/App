@@ -77,6 +77,28 @@ object Store {
     fun setRingStroke(ctx: Context, v: Int) = p(ctx).edit().putInt("ringStroke", v).apply()
     fun setRingAlpha(ctx: Context, v: Int) = p(ctx).edit().putInt("ringAlpha", v).apply()
 
+    // ---- Vùng kéo camera (chế độ Trợ năng): kéo ngón trong vùng -> app kéo ngón ảo ở "điểm đích" trong game
+    fun zoneOn(ctx: Context) = p(ctx).getBoolean("zoneOn", false)
+    fun zoneSize(ctx: Context) = p(ctx).getInt("zoneSize", 200)    // dp, cạnh vùng vuông
+    fun zoneAlpha(ctx: Context) = p(ctx).getInt("zoneAlpha", 30)   // %
+    fun zoneSens(ctx: Context) = p(ctx).getInt("zoneSens", 150)    // % (100 = kéo 1px thật -> 1px ảo)
+    fun setZoneOn(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("zoneOn", v).apply()
+    fun setZoneSize(ctx: Context, v: Int) = p(ctx).edit().putInt("zoneSize", v).apply()
+    fun setZoneAlpha(ctx: Context, v: Int) = p(ctx).edit().putInt("zoneAlpha", v).apply()
+    fun setZoneSens(ctx: Context, v: Int) = p(ctx).edit().putInt("zoneSens", v).apply()
+
+    /** Vị trí (góc trên-trái) của cửa sổ [key] ("zone" / "target"), nhớ riêng cho hướng dọc / ngang. */
+    fun winPos(ctx: Context, key: String, land: Boolean): Pair<Int, Int>? {
+        val s = p(ctx)
+        val k = key + (if (land) "_l" else "_p")
+        return if (s.contains(k + "x")) Pair(s.getInt(k + "x", 0), s.getInt(k + "y", 0)) else null
+    }
+
+    fun setWinPos(ctx: Context, key: String, x: Int, y: Int, land: Boolean) {
+        val k = key + (if (land) "_l" else "_p")
+        p(ctx).edit().putInt(k + "x", x).putInt(k + "y", y).apply()
+    }
+
     /** Vị trí bong bóng, nhớ riêng cho hướng dọc / ngang. */
     fun bubblePos(ctx: Context, land: Boolean): Pair<Int, Int>? {
         val s = p(ctx)
