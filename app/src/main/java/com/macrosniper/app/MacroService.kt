@@ -14,6 +14,7 @@ import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -74,6 +75,12 @@ class MacroService : AccessibilityService() {
     private var listOpen = false
     private var addTargetMain = 0 // main đang được chọn để thêm nút số vào
     private var builtTapMode = -1 // chế độ chạm lúc dựng overlay (cờ cửa sổ phụ thuộc vào nó)
+    private var builtType = 0 // loại cửa sổ nổi đang dùng (vẽ trên app / Trợ năng dự phòng)
+    private var builtSize: Pair<Int, Int>? = null // cỡ màn hình lúc dựng overlay
+    private var backdropLp: WindowManager.LayoutParams? = null
+    private var bubbleLp: WindowManager.LayoutParams? = null
+    private var panelW = 0
+    private var missTicks = 0 // số nhịp watchdog liên tiếp thấy cửa sổ nổi bị mất
     private var pairOpen = false
     private var pairCode = ""
     private var lastAdbWarn = 0L
@@ -91,12 +98,7 @@ class MacroService : AccessibilityService() {
                     if (mode == Mode.OFF) {
                         startOverlay()
                     } else {
-                        ensureAttached()
-                        // đề phòng hệ thống không báo xoay màn hình: tự dựng lại khi đổi hướng
-                        val ll = lastLand
-                        if (ll != null && ll != isLand()) rebuildAll()
-                        // đổi chế độ chạm (từ app chính hoặc bảng nổi) -> chỉ đổi cờ cửa sổ tại chỗ, không dựng lại
-                        else if (builtTapMode != Store.tapMode(this@MacroService)) applyTapModeFlags()
+                        checkHealth()
                     }
                     if (Store.tapMode(this@MacroService) == TAP_ADB) AdbClient.tick(applicationContext)
                 }
@@ -104,6 +106,40 @@ class MacroService : AccessibilityService() {
             }
             handler.postDelayed(this, 1000)
         }
+    }
+
+    /**
+     * Chỉ dựng lại TOÀN BỘ giao diện nổi khi thật sự cần:
+     *  - cửa sổ nổi bị hệ thống gỡ mất (mất liên tục >= 2 nhịp ~ 1-2 giây),
+     *  - đổi hướng / cỡ màn hình,
+     *  - đổi loại cửa sổ (vừa cấp / thu hồi quyền "hiển thị trên ứng dụng khác").
+     * Còn lại (đổi chế độ chạm, thêm/xóa nút, vào/ra setup...) chỉ cập nhật tại chỗ, không dựng lại.
+     */
+    private fun checkHealth() {
+        val size = screenSize()
+        val ll = lastLand
+        if ((ll != null && ll != isLand()) || (builtSize != null && builtSize != size)) {
+            rebuildAll()
+            return
+        }
+        if (builtType != overlayType()) {
+            rebuildAll()
+            return
+        }
+        val lost = live.any { !it.first.isAttachedToWindow }
+        if (!lost) {
+            missTicks = 0
+        } else {
+            missTicks++
+            if (missTicks >= 2) {
+                // mất một lúc rồi vẫn chưa quay lại -> dựng lại sạch toàn bộ
+                missTicks = 0
+                rebuildAll()
+                return
+            }
+            ensureAttached() // lần đầu: thử gắn lại nhẹ nhàng, chưa cần dựng lại
+        }
+        if (builtTapMode != Store.tapMode(this)) onTapModeChanged()
     }
 
     override fun onServiceConnected() {
@@ -126,7 +162,16 @@ class MacroService : AccessibilityService() {
         super.onConfigurationChanged(newConfig)
         density = resources.displayMetrics.density
         if (mode != Mode.OFF) {
-            handler.postDelayed({ rebuildAll() }, 350)
+            // Cấu hình đổi không phải lúc nào cũng là xoay màn hình (chế độ tối, cỡ chữ, bàn phím...).
+            // Chỉ dựng lại khi cỡ màn hình thật sự đổi.
+            handler.removeCallbacks(configCheck)
+            handler.postDelayed(configCheck, 350)
+        }
+    }
+
+    private val configCheck = Runnable {
+        if (mode != Mode.OFF) {
+            if (builtSize != screenSize()) rebuildAll() else syncArm()
         }
     }
 
@@ -144,6 +189,7 @@ class MacroService : AccessibilityService() {
         AdbClient.listeners.remove(adbListener)
         AdbClient.disconnect()
         handler.removeCallbacks(watchdog)
+        handler.removeCallbacks(configCheck)
         handler.removeCallbacksAndMessages(chainToken)
         mode = Mode.OFF
         removeAll()
@@ -179,20 +225,7 @@ class MacroService : AccessibilityService() {
 
     private fun dp(v: Number): Int = (v.toFloat() * density + 0.5f).toInt()
 
-    private var sizeCache: Pair<Int, Int>? = null
-    private var sizeCacheAt = 0L
-
     private fun screenSize(): Pair<Int, Int> {
-        val now = SystemClock.uptimeMillis()
-        val c = sizeCache
-        if (c != null && now - sizeCacheAt < 250L) return c
-        val r = querySize()
-        sizeCache = r
-        sizeCacheAt = now
-        return r
-    }
-
-    private fun querySize(): Pair<Int, Int> {
         try {
             val dmg = getSystemService(Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
             val d = dmg.getDisplay(android.view.Display.DEFAULT_DISPLAY)
@@ -223,6 +256,44 @@ class MacroService : AccessibilityService() {
         0
     }
 
+    /**
+     * Vẽ giao diện nổi BẰNG QUYỀN "Hiển thị trên ứng dụng khác" (TYPE_APPLICATION_OVERLAY) thay vì cửa sổ Trợ năng
+     * (cửa sổ Trợ năng chặn cảm ứng ở thoát / thông báo / tin nhắn...). Chưa cấp quyền thì dùng Trợ năng tạm.
+     */
+    @Suppress("DEPRECATION")
+    private fun overlayType(): Int {
+        val can = try {
+            Settings.canDrawOverlays(this)
+        } catch (_: Exception) {
+            false
+        }
+        return if (can) {
+            if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            else WindowManager.LayoutParams.TYPE_PHONE
+        } else {
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        }
+    }
+
+    /**
+     * Bật/tắt khả năng nhận chạm của một cửa sổ nổi tại chỗ. Android 12+ chặn cú chạm xuyên qua cửa sổ nổi
+     * của app khác nếu độ mờ cửa sổ > 0.8 -> cửa sổ không nhận chạm (nút số...) để alpha 0.8 cho cú chạm macro đi xuyên.
+     */
+    private fun applyTouchable(lp: WindowManager.LayoutParams, touchable: Boolean) {
+        lp.flags = if (touchable) lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        else lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        lp.alpha = if (!touchable && Build.VERSION.SDK_INT >= 31 &&
+            builtType != WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        ) 0.8f else 1f
+    }
+
+    private fun updateWin(v: View, lp: WindowManager.LayoutParams) {
+        try {
+            wm.updateViewLayout(v, lp)
+        } catch (_: Exception) {
+        }
+    }
+
     private fun baseLp(w: Int, h: Int, touchable: Boolean): WindowManager.LayoutParams {
         // FLAG_SPLIT_TOUCH: cho phép ngón này chạm nút nổi, ngón kia chạm game (cửa sổ khác) CÙNG LÚC.
         // Thiếu cờ này thì khi 1 ngón đang đè nút main, mọi ngón khác bị Android dồn hết vào nút main
@@ -233,13 +304,13 @@ class MacroService : AccessibilityService() {
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
         // Chế độ Trợ năng: giữ cờ y như bản cũ (đã chạy tốt). Chỉ chế độ ADB mới cần tách cảm ứng.
         if (Store.tapMode(this) == TAP_ADB) flags = flags or WindowManager.LayoutParams.FLAG_SPLIT_TOUCH
-        if (!touchable) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         val lp = WindowManager.LayoutParams(
             w, h,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            builtType,
             flags,
             PixelFormat.TRANSLUCENT
         )
+        applyTouchable(lp, touchable)
         lp.gravity = Gravity.TOP or Gravity.START
         if (Build.VERSION.SDK_INT >= 30) {
             lp.layoutInDisplayCutoutMode =
@@ -273,12 +344,38 @@ class MacroService : AccessibilityService() {
         btnViews.clear()
         btnLps.clear()
         backdrop = null
+        backdropLp = null
         bubble = null
+        bubbleLp = null
         panelRoot = null
         panelLp = null
         panelContent = null
         panelTitle = null
-        flushZombies()
+    }
+
+    /** Gỡ riêng cửa sổ của MỘT nút (không đụng tới các cửa sổ khác). */
+    private fun removeButtonWindow(id: Int) {
+        val v = btnViews.remove(id)
+        btnLps.remove(id)
+        if (v != null) {
+            live.removeAll { it.first === v }
+            try {
+                wm.removeViewImmediate(v)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /** Đổi chế độ chạm: chỉ cập nhật cờ cửa sổ tại chỗ (FLAG_SPLIT_TOUCH), KHÔNG dựng lại giao diện. */
+    private fun onTapModeChanged() {
+        builtTapMode = Store.tapMode(this)
+        val adb = builtTapMode == TAP_ADB
+        for ((v, lp) in live) {
+            lp.flags = if (adb) lp.flags or WindowManager.LayoutParams.FLAG_SPLIT_TOUCH
+            else lp.flags and WindowManager.LayoutParams.FLAG_SPLIT_TOUCH.inv()
+            updateWin(v, lp)
+        }
+        syncArm()
     }
 
     /** Tự động gắn lại mọi giao diện bị hệ thống gỡ mất (máy nóng, lag, thiếu RAM...). */
@@ -405,116 +502,47 @@ class MacroService : AccessibilityService() {
         AdbClient.arm(on, displayRotation(), sw, sh)
     }
 
-    // Cửa sổ cũ chờ gỡ: khi dựng lại giao diện ta gắn bản MỚI lên trước, ~140ms sau mới gỡ bản cũ.
-    // Trước đây gỡ hết rồi mới gắn lại -> mọi nút / bong bóng / bảng biến mất một nhịp mỗi lần thao tác (chớp).
-    private val zombies = ArrayList<View>()
-    private val flushZombiesRun = Runnable { flushZombies() }
-
-    private fun flushZombies() {
-        handler.removeCallbacks(flushZombiesRun)
-        if (!::wm.isInitialized) {
-            zombies.clear()
-            return
-        }
-        for (v in zombies) {
-            try {
-                wm.removeViewImmediate(v)
-            } catch (_: Exception) {
-            }
-        }
-        zombies.clear()
-    }
-
-    /** Đổi chế độ chạm: chỉ bật/tắt cờ SPLIT_TOUCH trên các cửa sổ đang có (không gỡ, không dựng lại). */
-    private fun applyTapModeFlags() {
-        val adb = Store.tapMode(this) == TAP_ADB
-        val split = WindowManager.LayoutParams.FLAG_SPLIT_TOUCH
-        for ((v, lp) in live) {
-            lp.flags = if (adb) lp.flags or split else lp.flags and split.inv()
-            try {
-                wm.updateViewLayout(v, lp)
-            } catch (_: Exception) {
-            }
-        }
-        builtTapMode = Store.tapMode(this)
-    }
-
-    /** Gỡ riêng cửa sổ của 1 nút (các cửa sổ khác giữ nguyên). */
-    private fun removeButtonWindow(id: Int) {
-        val v = btnViews.remove(id) ?: return
-        btnLps.remove(id)
-        live.removeAll { it.first === v }
-        try {
-            wm.removeViewImmediate(v)
-        } catch (_: Exception) {
-        }
-    }
-
-    /** Vừa thêm 1 nút: chỉ gắn thêm cửa sổ của nút đó. */
-    private fun addedButton(b: MacroButton) {
-        if (mode == Mode.OFF || !::wm.isInitialized) return
-        val (sw, sh) = screenSize()
-        addButton(b, sw, sh)
-        backdrop?.invalidate()
-        refreshPanel()
-    }
-
-    /** Thay cả bộ nút (tải macro): gắn bộ mới trước, gỡ bộ cũ sau; bong bóng + bảng + nền giữ nguyên. */
-    private fun reloadButtons() {
-        if (mode == Mode.OFF || !::wm.isInitialized) return
-        for (id in btnViews.keys.toList()) {
-            val v = btnViews.remove(id) ?: continue
-            btnLps.remove(id)
-            live.removeAll { it.first === v }
-            zombies.add(v)
-        }
-        val (sw, sh) = screenSize()
-        applyOrientation(sw, sh)
-        for (b in buttons) addButton(b, sw, sh)
-        backdrop?.invalidate()
-        refreshPanel()
-        handler.removeCallbacks(flushZombiesRun)
-        handler.postDelayed(flushZombiesRun, 200)
-    }
-
+    /** Dựng lại TOÀN BỘ giao diện nổi. Chỉ dùng khi khởi động, xoay màn hình, hoặc khi giao diện bị mất. */
     private fun rebuildAll() {
-        if (!::wm.isInitialized) return
-        setPanelFocusable(false)
-        for ((v, _) in live) zombies.add(v)
-        live.clear()
-        btnViews.clear()
-        btnLps.clear()
-        backdrop = null
-        bubble = null
-        panelRoot = null
-        panelLp = null
-        panelContent = null
-        panelTitle = null
+        removeAll()
         builtTapMode = Store.tapMode(this)
+        builtType = overlayType()
+        builtSize = screenSize()
+        missTicks = 0
         syncArm()
-        if (mode == Mode.OFF) {
-            flushZombies()
-            return
-        }
+        if (mode == Mode.OFF) return
         val (sw, sh) = screenSize()
         applyOrientation(sw, sh)
-        if (mode == Mode.EDIT) addBackdrop()
+        // thứ tự cửa sổ (dưới -> trên): nền, các nút, bảng, bong bóng. Nền + bảng luôn có sẵn (ẩn khi chạy macro)
+        // nên vào/ra setup chỉ đổi kích thước / hiển thị, không phải gắn lại cửa sổ.
+        addBackdrop()
         for (b in buttons) addButton(b, sw, sh)
-        if (mode == Mode.EDIT) addPanel(sw, sh)
+        addPanel(sw, sh)
         addBubble(sw, sh)
-        handler.removeCallbacks(flushZombiesRun)
-        handler.postDelayed(flushZombiesRun, 200)
+        applyModeUi(animate = false)
+    }
+
+    /** Chuyển RUN <-> EDIT tại chỗ: đổi cờ cảm ứng / hiển thị của các cửa sổ đang có, không dựng lại. */
+    private fun applyModeUi(animate: Boolean = true) {
+        val editing = mode == Mode.EDIT
+        syncArm()
+        setBackdropActive(editing)
+        for (b in buttons) {
+            val v = btnViews[b.id] ?: continue
+            val lp = btnLps[b.id] ?: continue
+            configureButton(b, v, lp, update = true)
+        }
+        bubble?.editing = editing
+        setPanelShown(editing, animate)
     }
 
     private fun addBackdrop() {
         val v = BackdropView(this)
-        val lp = baseLp(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            true
-        )
+        // trạng thái chờ: 1x1 px, không nhận chạm (không che gì cả). Vào setup thì phóng ra toàn màn hình.
+        val lp = baseLp(1, 1, false)
         lp.x = 0
         lp.y = 0
+        v.visibility = View.INVISIBLE
         v.setOnTouchListener { _, e ->
             if (e.actionMasked == MotionEvent.ACTION_DOWN) {
                 setPanelFocusable(false)
@@ -523,23 +551,100 @@ class MacroService : AccessibilityService() {
             true
         }
         backdrop = v
+        backdropLp = lp
         addOverlay(v, lp)
+    }
+
+    private fun setBackdropActive(on: Boolean) {
+        val v = backdrop ?: return
+        val lp = backdropLp ?: return
+        if (on) {
+            lp.width = WindowManager.LayoutParams.MATCH_PARENT
+            lp.height = WindowManager.LayoutParams.MATCH_PARENT
+            applyTouchable(lp, true)
+            v.visibility = View.VISIBLE
+        } else {
+            lp.width = 1
+            lp.height = 1
+            applyTouchable(lp, false)
+            v.visibility = View.INVISIBLE
+        }
+        updateWin(v, lp)
+        v.invalidate()
     }
 
     private fun addButton(b: MacroButton, sw: Int, sh: Int) {
         val size = dp(b.sizeDp)
-        val editing = mode == Mode.EDIT
-        val touchable = editing || b.kind == Kind.MAIN
-        val lp = baseLp(size, size, touchable)
+        val lp = baseLp(size, size, true)
         b.x = b.x.coerceIn(size / 2, maxOf(size / 2, sw - size / 2))
         b.y = b.y.coerceIn(size / 2, maxOf(size / 2, sh - size / 2))
         lp.x = b.x - size / 2
         lp.y = b.y - size / 2
 
         val v = BtnView(this, b)
+        configureButton(b, v, lp, update = false)
+        btnViews[b.id] = v
+        btnLps[b.id] = lp
+        addOverlay(v, lp)
+    }
+
+    /** Thêm 1 nút mới khi đang chạy: chỉ gắn thêm đúng 1 cửa sổ + hiệu ứng hiện ra, không đụng các nút khác. */
+    private fun addButtonLive(b: MacroButton) {
+        val (sw, sh) = screenSize()
+        addButton(b, sw, sh)
+        val v = btnViews[b.id]
+        val lp = btnLps[b.id]
+        if (v != null) {
+            v.scaleX = 0.5f
+            v.scaleY = 0.5f
+            v.animate().scaleX(1f).scaleY(1f).setDuration(160).start()
+        }
+        if (lp != null) keepChromeOnTop(lp)
+        backdrop?.invalidate()
+    }
+
+    /** Nút mới được gắn SAU bảng/bong bóng nên nằm đè lên; nếu chồng nhau thì đưa bảng + bong bóng lên trên lại. */
+    private fun keepChromeOnTop(lp: WindowManager.LayoutParams) {
+        val r = Rect(lp.x, lp.y, lp.x + lp.width, lp.y + lp.height)
+        var moved = false
+        val pr = panelRoot
+        val pl = panelLp
+        if (pr != null && pl != null && mode == Mode.EDIT) {
+            val pRect = Rect(pl.x, pl.y, pl.x + pl.width, pl.y + maxOf(pr.height, dp(80)))
+            if (Rect.intersects(r, pRect)) {
+                setPanelFocusable(false)
+                refront(pr, pl)
+                moved = true
+            }
+        }
+        val bv = bubble
+        val bl = bubbleLp
+        if (bv != null && bl != null) {
+            val bRect = Rect(bl.x, bl.y, bl.x + bl.width, bl.y + bl.height)
+            if (moved || Rect.intersects(r, bRect)) refront(bv, bl)
+        }
+    }
+
+    private fun refront(v: View, lp: WindowManager.LayoutParams) {
+        try {
+            wm.removeViewImmediate(v)
+        } catch (_: Exception) {
+        }
+        try {
+            wm.addView(v, lp)
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Gán lại cảm ứng / độ trong / nhãn cho một nút theo chế độ hiện tại (RUN hoặc EDIT). */
+    private fun configureButton(b: MacroButton, v: BtnView, lp: WindowManager.LayoutParams, update: Boolean) {
+        val editing = mode == Mode.EDIT
+        applyTouchable(lp, editing || b.kind == Kind.MAIN)
         v.alpha = viewAlpha(b)
         v.showTag = editing
         v.hilite = editing && b.id == selectedId
+        v.pressedFx = false
+        v.setOnTouchListener(null)
 
         if (editing) {
             v.setOnTouchListener(
@@ -600,9 +705,7 @@ class MacroService : AccessibilityService() {
                 true
             }
         }
-        btnViews[b.id] = v
-        btnLps[b.id] = lp
-        addOverlay(v, lp)
+        if (update) updateWin(v, lp)
     }
 
     private fun addBubble(sw: Int, sh: Int) {
@@ -628,6 +731,7 @@ class MacroService : AccessibilityService() {
             )
         )
         bubble = v
+        bubbleLp = lp
         addOverlay(v, lp)
     }
 
@@ -635,14 +739,12 @@ class MacroService : AccessibilityService() {
         if (mode == Mode.RUN) enterEdit() else if (mode == Mode.EDIT) exitEdit()
     }
 
-    // Vào / ra Setup là đổi cấu trúc cửa sổ (thêm / bỏ nền + bảng, đổi nút từ xuyên-chạm sang chạm được, giữ đúng thứ tự
-    // lớp), nên dùng rebuildAll() — bản mới gắn trước, bản cũ gỡ sau nên không bị chớp.
     private fun enterEdit() {
         cancelChain()
         mode = Mode.EDIT
         selectedId = -1
         listOpen = false
-        rebuildAll()
+        applyModeUi()
     }
 
     private fun exitEdit() {
@@ -651,7 +753,7 @@ class MacroService : AccessibilityService() {
         selectedId = -1
         listOpen = false
         persist()
-        rebuildAll()
+        applyModeUi()
     }
 
     // ---------------------------------------------------------------- nền + đường nối main -> 1 -> 2 -> 3
@@ -668,14 +770,10 @@ class MacroService : AccessibilityService() {
             alpha = 220
         }
 
-        private val dim = Color.parseColor("#55000000")
-        private var dash: DashPathEffect? = null
-
         override fun onDraw(c: Canvas) {
-            c.drawColor(dim)
+            c.drawColor(Color.parseColor("#55000000"))
             line.strokeWidth = 3f * density
-            if (dash == null) dash = DashPathEffect(floatArrayOf(14f * density, 10f * density), 0f)
-            line.pathEffect = dash
+            line.pathEffect = DashPathEffect(floatArrayOf(14f * density, 10f * density), 0f)
             for (m in buttons.filter { it.kind == Kind.MAIN }) {
                 val seq = buttons
                     .filter { it.kind == Kind.NUM && it.mainNo == m.number }
@@ -762,6 +860,7 @@ class MacroService : AccessibilityService() {
 
     private fun addPanel(sw: Int, sh: Int) {
         val width = minOf(sw - dp(16), dp(400))
+        panelW = width
         val lp = baseLp(width, WindowManager.LayoutParams.WRAP_CONTENT, true)
         lp.x = if (panelX >= 0) panelX.coerceIn(0, maxOf(0, sw - width)) else (sw - width) / 2
         lp.y = if (panelY >= 0) panelY.coerceIn(0, maxOf(0, sh - dp(80))) else dp(8)
@@ -836,6 +935,35 @@ class MacroService : AccessibilityService() {
         addOverlay(root, lp)
     }
 
+    /** Hiện / ẩn bảng setup tại chỗ (ẩn = cửa sổ 1x1 không nhận chạm), không gỡ / gắn lại cửa sổ. */
+    private fun setPanelShown(on: Boolean, animate: Boolean) {
+        val lp = panelLp ?: return
+        val root = panelRoot ?: return
+        if (on) {
+            lp.width = panelW
+            lp.height = WindowManager.LayoutParams.WRAP_CONTENT
+            applyTouchable(lp, true)
+            root.visibility = View.VISIBLE
+            refreshPanel()
+            if (animate) {
+                root.alpha = 0f
+                root.translationY = -dp(12).toFloat()
+                root.animate().alpha(1f).translationY(0f).setDuration(160).start()
+            } else {
+                root.alpha = 1f
+                root.translationY = 0f
+            }
+        } else {
+            setPanelFocusable(false)
+            root.animate().cancel()
+            lp.width = 1
+            lp.height = 1
+            applyTouchable(lp, false)
+            root.visibility = View.GONE
+        }
+        updateWin(root, lp)
+    }
+
     private fun refreshPanel() {
         val content = panelContent ?: return
         val b = buttons.firstOrNull { it.id == selectedId }
@@ -855,7 +983,7 @@ class MacroService : AccessibilityService() {
         Store.setTapMode(this, m)
         cancelChain()
         if (m == TAP_ADB) AdbClient.connect(applicationContext) else AdbClient.disconnect()
-        syncArm()
+        onTapModeChanged() // đổi cờ cửa sổ tại chỗ, không dựng lại giao diện
         refreshPanel()
     }
 
@@ -1114,14 +1242,12 @@ class MacroService : AccessibilityService() {
                 item.setOnClickListener {
                     val loaded = Store.loadMacro(this, n)
                     if (loaded != null) {
-                        buttons = loaded
-                        lastLand = null
-                        normalize()
+                        replaceButtons(loaded)
                         nameDraft = n
                         selectedId = -1
                         listOpen = false
                         persist()
-                        reloadButtons()
+                        deselect()
                         toast("Đã tải macro: $n")
                     }
                 }
@@ -1322,6 +1448,19 @@ class MacroService : AccessibilityService() {
         refreshPanel()
     }
 
+    /** Thay toàn bộ danh sách nút: chỉ gỡ / gắn các cửa sổ NÚT, bảng + bong bóng + nền giữ nguyên. */
+    private fun replaceButtons(list: MutableList<MacroButton>) {
+        for (id in btnViews.keys.toList()) removeButtonWindow(id)
+        buttons = list
+        lastLand = null
+        normalize()
+        val (sw, sh) = screenSize()
+        applyOrientation(sw, sh)
+        for (b in buttons) addButton(b, sw, sh)
+        for (b in buttons) btnLps[b.id]?.let { keepChromeOnTop(it) }
+        backdrop?.invalidate()
+    }
+
     private fun nextId(): Int = (buttons.maxOfOrNull { it.id } ?: 0) + 1
 
     private fun addNum() {
@@ -1344,7 +1483,8 @@ class MacroService : AccessibilityService() {
         )
         addTargetMain = mainNo
         persist()
-        addedButton(buttons.last())
+        addButtonLive(buttons.last())
+        refreshPanel() // cập nhật nhãn "Nút số thuộc ..."
     }
 
     private fun addMain() {
@@ -1361,7 +1501,8 @@ class MacroService : AccessibilityService() {
         // không tự nối nút số nào vào main mới; các nút số tạo sau sẽ vào main này
         addTargetMain = n
         persist()
-        addedButton(buttons.last())
+        addButtonLive(buttons.last())
+        refreshPanel()
     }
 
     private fun deleteButton(b: MacroButton) {
@@ -1376,21 +1517,19 @@ class MacroService : AccessibilityService() {
         selectedId = -1
         persist()
         removeButtonWindow(b.id)
-        for (v in btnViews.values) {
-            v.hilite = false
-            v.invalidate()
-        }
+        // số thứ tự của các nút còn lại có thể đổi -> chỉ vẽ lại chúng
+        for (v in btnViews.values) v.invalidate()
         backdrop?.invalidate()
-        refreshPanel()
+        deselect()
     }
 
     private fun clearAll() {
+        for (id in btnViews.keys.toList()) removeButtonWindow(id)
         buttons.clear()
         selectedId = -1
         persist()
-        for (id in btnViews.keys.toList()) removeButtonWindow(id)
         backdrop?.invalidate()
-        refreshPanel()
+        deselect()
         toast("Đã xóa hết nút")
     }
 

@@ -57,9 +57,6 @@ class BtnView(ctx: Context, val m: MacroButton) : View(ctx) {
             invalidate()
         }
     private var flashing = false
-    private var grad: RadialGradient? = null
-    private var gradKey = -1f
-    private val gradColors = intArrayOf(Color.parseColor("#F0243320"), Color.parseColor("#F00A0E0A"))
 
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
     private val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -94,14 +91,11 @@ class BtnView(ctx: Context, val m: MacroButton) : View(ctx) {
 
         // thân nút
         val br = r * 0.84f
-        if (grad == null || gradKey != br + cx * 1000f) {
-            grad = RadialGradient(
-                cx, cy - br * 0.35f, br * 1.3f,
-                gradColors, null, Shader.TileMode.CLAMP
-            )
-            gradKey = br + cx * 1000f
-        }
-        p.shader = grad
+        p.shader = RadialGradient(
+            cx, cy - br * 0.35f, br * 1.3f,
+            intArrayOf(Color.parseColor("#F0243320"), Color.parseColor("#F00A0E0A")),
+            null, Shader.TileMode.CLAMP
+        )
         p.alpha = 255
         c.drawCircle(cx, cy, br, p)
         p.shader = null

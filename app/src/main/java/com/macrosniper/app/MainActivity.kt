@@ -291,7 +291,7 @@ class MainActivity : Activity() {
         guide.background = roundedBg(Color.parseColor("#0FFFFFFF"), dp(18).toFloat(), Color.parseColor("#1FFFFFFF"), dp(1))
         guide.addView(text("HƯỚNG DẪN NHANH", 12f, Theme.ACCENT, true))
         val steps = listOf(
-            "1.  Bật dịch vụ \"Macro Touch\" trong Cài đặt → Trợ năng.",
+            "1.  Bật dịch vụ \"Macro Touch\" trong Cài đặt → Trợ năng, và cấp quyền \"Hiển thị trên các ứng dụng khác\" khi app hỏi.",
             "2.  Quay lại đây, bấm BẮT ĐẦU. Bong bóng logo sẽ nổi trên màn hình (kéo thả được).",
             "3.  Chạm bong bóng để mở bảng setup: tạo nút trung tâm main1, rồi chọn main đó để thêm nút số 1, 2, 3... (mỗi main có số riêng: main2 → 1, 2...).",
             "4.  Kéo các nút đến đúng vị trí cần bấm, chạm vào nút để chỉnh size / độ trong (kéo về 0 là tàng hình) / tốc độ. Lúc setup nút luôn hiện tối thiểu 20%.",
@@ -427,12 +427,14 @@ class MainActivity : Activity() {
             running -> {
                 dotBg.setColor(Theme.ACCENT)
                 statusText.text = "Đang chạy"
-                statusSub.text = "Giao diện nổi đang hiển thị trên màn hình"
+                statusSub.text = if (canOverlay()) "Giao diện nổi đang hiển thị trên màn hình"
+                else "Chưa cấp quyền \"Hiển thị trên ứng dụng khác\" · đang vẽ tạm bằng Trợ năng"
             }
             enabled -> {
                 dotBg.setColor(Theme.LIME)
                 statusText.text = "Sẵn sàng"
-                statusSub.text = "Dịch vụ Trợ năng đã bật · bấm BẮT ĐẦU để hiện nút nổi"
+                statusSub.text = if (canOverlay()) "Dịch vụ Trợ năng đã bật · bấm BẮT ĐẦU để hiện nút nổi"
+                else "Bấm BẮT ĐẦU để cấp quyền \"Hiển thị trên ứng dụng khác\""
             }
             else -> {
                 dotBg.setColor(Theme.DANGER)
@@ -446,8 +448,39 @@ class MainActivity : Activity() {
         if (isRunning()) onStopClicked() else onStartClicked()
     }
 
+    private fun canOverlay(): Boolean = try {
+        Settings.canDrawOverlays(this)
+    } catch (_: Exception) {
+        true
+    }
+
+    private fun showOverlayDialog() {
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Cấp quyền hiển thị trên ứng dụng khác")
+            .setMessage(
+                "Macro Touch vẽ nút nổi lên trên app khác bằng quyền \"Hiển thị trên các ứng dụng khác\" " +
+                        "(không vẽ qua Trợ năng nữa vì cách đó hay chặn cảm ứng khi thoát, xem tin nhắn...).\n\n" +
+                        "Bấm \"Cấp quyền\", bật công tắc cho Macro Touch rồi quay lại bấm BẮT ĐẦU."
+            )
+            .setPositiveButton("Cấp quyền") { _, _ ->
+                try {
+                    val i = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
+                    i.data = Uri.parse("package:$packageName")
+                    startActivity(i)
+                } catch (_: Exception) {
+                    startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
+                }
+            }
+            .setNegativeButton("Đóng", null)
+            .show()
+    }
+
     private fun onStartClicked() {
         val svc = MacroService.instance
+        if (svc != null && !canOverlay()) {
+            showOverlayDialog()
+            return
+        }
         if (svc != null) {
             svc.startOverlay()
             refreshStatus()
