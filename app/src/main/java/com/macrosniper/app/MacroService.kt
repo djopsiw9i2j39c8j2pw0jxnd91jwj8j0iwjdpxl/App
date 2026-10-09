@@ -194,7 +194,6 @@ class MacroService : AccessibilityService() {
         handler.removeCallbacks(configCheck)
         handler.removeCallbacksAndMessages(chainToken)
         mode = Mode.OFF
-        abortDrag()
         removeAll()
         instance = null
     }
@@ -219,7 +218,6 @@ class MacroService : AccessibilityService() {
     fun stopOverlay() {
         Store.setRunning(this, false)
         cancelChain()
-        abortDrag()
         AdbClient.disconnect()
         mode = Mode.OFF
         removeAll()
@@ -337,7 +335,6 @@ class MacroService : AccessibilityService() {
 
     private fun removeAll() {
         if (!::wm.isInitialized) return
-        abortDrag()
         setPanelFocusable(false)
         for ((v, _) in live) {
             try {
@@ -354,10 +351,6 @@ class MacroService : AccessibilityService() {
         bubbleLp = null
         crossView = null
         crossLp = null
-        zoneView = null
-        zoneLp = null
-        targetView = null
-        targetLp = null
         panelRoot = null
         panelLp = null
         panelContent = null
@@ -382,13 +375,11 @@ class MacroService : AccessibilityService() {
         builtTapMode = Store.tapMode(this)
         val adb = builtTapMode == TAP_ADB
         for ((v, lp) in live) {
-            if (v === zoneView) continue // vùng kéo luôn cần SPLIT_TOUCH
             lp.flags = if (adb) lp.flags or WindowManager.LayoutParams.FLAG_SPLIT_TOUCH
             else lp.flags and WindowManager.LayoutParams.FLAG_SPLIT_TOUCH.inv()
             updateWin(v, lp)
         }
         syncArm()
-        updateZone() // vùng kéo chỉ chạy ở chế độ Trợ năng
     }
 
     /** Tự động gắn lại mọi giao diện bị hệ thống gỡ mất (máy nóng, lag, thiếu RAM...). */
@@ -530,7 +521,6 @@ class MacroService : AccessibilityService() {
         // nên vào/ra setup chỉ đổi kích thước / hiển thị, không phải gắn lại cửa sổ.
         addBackdrop()
         addCrosshair()
-        addZoneWindows()
         for (b in buttons) addButton(b, sw, sh)
         addPanel(sw, sh)
         addBubble(sw, sh)
@@ -548,388 +538,7 @@ class MacroService : AccessibilityService() {
             configureButton(b, v, lp, update = true)
         }
         bubble?.editing = editing
-        if (editing) abortDrag()
-        configureZone(update = true)
         setPanelShown(editing, animate)
-    }
-
-    // ---------------------------------------------------------------- vùng kéo camera (chỉ chế độ Trợ năng)
-    //
-    // Ngón thật chỉ chạm vào "vùng kéo" của app (không chạm xuống game) nên không bị trộn với cú chạm giả.
-    // App đọc đường kéo rồi tự phát lại xuống game bằng 1 nét chạm LIÊN TỤC ở "điểm đích" (continueStroke).
-    // Các cú chạm macro khi đang kéo được gộp vào cùng gesture (dispatchGesture huỷ gesture đang chạy nếu gửi chồng).
-
-    private class PendingTap(val x: Float, val y: Float, val done: () -> Unit)
-
-    private var zoneView: ZoneView? = null
-    private var zoneLp: WindowManager.LayoutParams? = null
-    private var targetView: ZoneView? = null
-    private var targetLp: WindowManager.LayoutParams? = null
-
-    private var dragActive = false      // ngón thật đang đặt trong vùng kéo
-    private var dragEnding = false      // cần gửi đoạn kết thúc (nhấc ngón ảo)
-    private var dragInFlight = false
-    private var dragStroke: GestureDescription.StrokeDescription? = null
-    private var dragSX = 0f
-    private var dragSY = 0f             // điểm bắt đầu (tâm điểm đích)
-    private var dragCX = 0f
-    private var dragCY = 0f             // vị trí ngón ảo mong muốn
-    private var dragPX = 0f
-    private var dragPY = 0f             // vị trí ngón ảo đã gửi xong
-    private val pendingTaps = ArrayList<PendingTap>()
-    private val dragWatch = Runnable { onDragSegment(false, dragPX, dragPY, dragEnding, emptyList()) }
-
-    private fun zoneWanted(): Boolean =
-        Store.zoneOn(this) && Store.tapMode(this) == TAP_ACC && Build.VERSION.SDK_INT >= 26
-
-    private fun dragBusy(): Boolean = dragActive || dragEnding || dragInFlight
-
-    private fun zoneRect(): Rect? {
-        val lp = zoneLp ?: return null
-        return Rect(lp.x, lp.y, lp.x + lp.width, lp.y + lp.height)
-    }
-
-    private fun addZoneWindows() {
-        if (!zoneWanted()) return
-        val (sw, sh) = screenSize()
-        val land = sw > sh
-
-        val tsz = dp(44)
-        val tlp = baseLp(tsz, tsz, false)
-        val tp = Store.winPos(this, "target", land) ?: Pair((sw * 0.66f).toInt() - tsz / 2, (sh * 0.40f).toInt() - tsz / 2)
-        tlp.x = tp.first.coerceIn(0, maxOf(0, sw - tsz))
-        tlp.y = tp.second.coerceIn(0, maxOf(0, sh - tsz))
-        val tv = ZoneView(this, true)
-        targetView = tv
-        targetLp = tlp
-        addOverlay(tv, tlp)
-
-        val zsz = dp(Store.zoneSize(this))
-        val zlp = baseLp(zsz, zsz, true)
-        // FLAG_SPLIT_TOUCH: ngón này kéo cam trong vùng, ngón kia vẫn điều khiển nhân vật ở game CÙNG LÚC
-        zlp.flags = zlp.flags or WindowManager.LayoutParams.FLAG_SPLIT_TOUCH
-        val zp = Store.winPos(this, "zone", land) ?: Pair((sw * 0.80f).toInt() - zsz / 2, (sh * 0.62f).toInt() - zsz / 2)
-        zlp.x = zp.first.coerceIn(0, maxOf(0, sw - zsz))
-        zlp.y = zp.second.coerceIn(0, maxOf(0, sh - zsz))
-        val zv = ZoneView(this, false)
-        zoneView = zv
-        zoneLp = zlp
-        addOverlay(zv, zlp)
-        configureZone(update = false)
-    }
-
-    /** Gán lại cảm ứng / độ trong của vùng kéo + điểm đích theo chế độ hiện tại (RUN / EDIT). */
-    private fun configureZone(update: Boolean) {
-        val editing = mode == Mode.EDIT
-        val a = Store.zoneAlpha(this) / 100f
-        val tv = targetView
-        val tlp = targetLp
-        if (tv != null && tlp != null) {
-            applyTouchable(tlp, editing) // chạy macro: không nhận chạm để cú kéo ảo đi xuyên xuống game
-            tv.editing = editing
-            tv.alpha = if (editing) 1f else a
-            tv.setOnTouchListener(null)
-            if (editing) {
-                tv.setOnTouchListener(
-                    DragListener(
-                        lp = tlp, wm = wm, slop = dp(4),
-                        limit = { val s = screenSize(); Pair(s.first - tlp.width, s.second - tlp.height) },
-                        onMove = {}, onTap = {},
-                        onDragEnd = { Store.setWinPos(this, "target", tlp.x, tlp.y, isLand()) }
-                    )
-                )
-            }
-            if (update) updateWin(tv, tlp)
-        }
-        val zv = zoneView
-        val zlp = zoneLp
-        if (zv != null && zlp != null) {
-            applyTouchable(zlp, true)
-            zv.editing = editing
-            zv.alpha = if (editing) maxOf(a, 0.25f) else a
-            zv.pressedFx = false
-            zv.setOnTouchListener(null)
-            if (editing) {
-                zv.setOnTouchListener(
-                    DragListener(
-                        lp = zlp, wm = wm, slop = dp(4),
-                        limit = { val s = screenSize(); Pair(s.first - zlp.width, s.second - zlp.height) },
-                        onMove = {}, onTap = {},
-                        onDragEnd = { Store.setWinPos(this, "zone", zlp.x, zlp.y, isLand()) }
-                    )
-                )
-            } else {
-                zv.setOnTouchListener(zoneTouchListener())
-            }
-            if (update) updateWin(zv, zlp)
-        }
-    }
-
-    private fun zoneTouchListener(): View.OnTouchListener {
-        var pid = -1
-        var x0 = 0f
-        var y0 = 0f
-        return View.OnTouchListener { view, e ->
-            val zv = view as ZoneView
-            when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    pid = e.getPointerId(0)
-                    x0 = e.x
-                    y0 = e.y
-                    zv.pressedFx = true
-                    beginDrag()
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val i = e.findPointerIndex(pid)
-                    if (i >= 0) moveDrag((e.getX(i) - x0), (e.getY(i) - y0))
-                }
-                MotionEvent.ACTION_POINTER_UP -> {
-                    if (e.getPointerId(e.actionIndex) == pid) {
-                        pid = -1
-                        zv.pressedFx = false
-                        endDrag()
-                    }
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    pid = -1
-                    zv.pressedFx = false
-                    endDrag()
-                }
-            }
-            true
-        }
-    }
-
-    private fun beginDrag() {
-        val t = targetView ?: return
-        val tl = targetLp ?: return
-        val loc = IntArray(2)
-        if (t.isAttachedToWindow) t.getLocationOnScreen(loc) else {
-            loc[0] = tl.x
-            loc[1] = tl.y
-        }
-        dragSX = loc[0] + tl.width / 2f
-        dragSY = loc[1] + tl.height / 2f
-        dragCX = dragSX
-        dragCY = dragSY
-        dragPX = dragSX
-        dragPY = dragSY
-        dragStroke = null
-        dragActive = true
-        dragEnding = false
-        pumpDrag()
-    }
-
-    private fun moveDrag(dx: Float, dy: Float) {
-        if (!dragActive) return
-        val k = Store.zoneSens(this) / 100f
-        val (sw, sh) = screenSize()
-        dragCX = (dragSX + dx * k).coerceIn(1f, (sw - 1).toFloat())
-        dragCY = (dragSY + dy * k).coerceIn(1f, (sh - 1).toFloat())
-    }
-
-    private fun endDrag() {
-        if (!dragActive) return
-        dragActive = false
-        dragEnding = dragStroke != null || dragInFlight
-        pumpDrag()
-    }
-
-    /** Dừng chắc chắn mọi nét kéo ảo (đổi chế độ, tắt overlay, gỡ cửa sổ...) để ngón ảo không bị kẹt "đang đè". */
-    private fun abortDrag() {
-        if (!dragActive && !dragEnding && !dragInFlight) return
-        dragActive = false
-        dragEnding = dragStroke != null || dragInFlight
-        zoneView?.pressedFx = false
-        pumpDrag()
-    }
-
-    /** Gửi đoạn tiếp theo của nét kéo (kèm các cú chạm macro đang chờ). Chỉ 1 gesture bay tại một thời điểm. */
-    @android.annotation.TargetApi(26)
-    private fun pumpDrag() {
-        if (dragInFlight) return
-        if (!dragActive && !dragEnding && pendingTaps.isEmpty()) return
-        val taps = ArrayList<PendingTap>()
-        while (pendingTaps.isNotEmpty() && taps.size < 8) taps.add(pendingTaps.removeAt(0))
-
-        val ex = dragCX
-        val ey = dragCY
-        val ending = !dragActive
-        val gb = GestureDescription.Builder()
-        var count = 0
-        if (dragActive || dragEnding) {
-            val prev = dragStroke
-            if (ending && prev == null) {
-                dragEnding = false // chưa từng gửi nét nào -> không có gì để kết thúc
-            } else {
-                val path = Path()
-                path.moveTo(dragPX, dragPY)
-                val ex2 = if (ending) dragCX else ex
-                if (ex2 != dragPX || ey != dragPY) path.lineTo(ex2, ey)
-                val st = try {
-                    if (prev == null) GestureDescription.StrokeDescription(path, 0L, 30L, !ending)
-                    else prev.continueStroke(path, 0L, 30L, !ending)
-                } catch (_: Exception) {
-                    null
-                }
-                if (st != null) {
-                    dragStroke = st
-                    gb.addStroke(st)
-                    count++
-                } else {
-                    dragStroke = null
-                    dragEnding = false
-                }
-            }
-        }
-        for (t in taps) {
-            val tp = Path()
-            tp.moveTo(t.x, t.y)
-            try {
-                gb.addStroke(GestureDescription.StrokeDescription(tp, 0L, 10L))
-                count++
-            } catch (_: Exception) {
-            }
-        }
-        if (count == 0) {
-            for (t in taps) t.done()
-            if (dragActive) handler.postDelayed({ pumpDrag() }, 16)
-            return
-        }
-        val wasEnding = ending && dragEnding
-        val cb = object : AccessibilityService.GestureResultCallback() {
-            override fun onCompleted(g: GestureDescription?) {
-                handler.post { onDragSegment(true, ex, ey, wasEnding, taps) }
-            }
-
-            override fun onCancelled(g: GestureDescription?) {
-                handler.post { onDragSegment(false, ex, ey, wasEnding, taps) }
-            }
-        }
-        dragInFlight = true
-        val ok = try {
-            dispatchGesture(gb.build(), cb, handler)
-        } catch (_: Exception) {
-            false
-        }
-        if (!ok) {
-            onDragSegment(false, ex, ey, wasEnding, taps)
-        } else {
-            handler.removeCallbacks(dragWatch)
-            handler.postDelayed(dragWatch, 600) // đề phòng hệ thống không gọi lại
-        }
-    }
-
-    private fun onDragSegment(ok: Boolean, ex: Float, ey: Float, wasEnding: Boolean, taps: List<PendingTap>) {
-        if (!dragInFlight) return
-        dragInFlight = false
-        handler.removeCallbacks(dragWatch)
-        for (t in taps) t.done()
-        if (ok) {
-            dragPX = ex
-            dragPY = ey
-            if (wasEnding) {
-                dragEnding = false
-                dragStroke = null
-            }
-        } else {
-            // nét liên tục bị đứt (bị gesture khác huỷ) -> bắt đầu lại nét mới từ vị trí hiện tại
-            dragStroke = null
-            if (wasEnding) dragEnding = false
-            dragPX = dragCX
-            dragPY = dragCY
-        }
-        pumpDrag()
-    }
-
-    /** Cài đặt vùng kéo đổi: chỉ gắn / gỡ / vẽ lại đúng các cửa sổ của vùng, không đụng phần còn lại. */
-    private fun updateZone() {
-        val want = zoneWanted()
-        val zv = zoneView
-        val zlp = zoneLp
-        if (!want) {
-            if (zv != null || targetView != null) {
-                abortDrag()
-                for (v in listOfNotNull(zv, targetView)) {
-                    live.removeAll { it.first === v }
-                    try {
-                        wm.removeViewImmediate(v)
-                    } catch (_: Exception) {
-                    }
-                }
-                zoneView = null
-                zoneLp = null
-                targetView = null
-                targetLp = null
-            }
-            return
-        }
-        if (zv == null || zlp == null) {
-            addZoneWindows()
-            // vùng mới gắn sau các nút nên nằm đè lên -> đưa nút, bảng, bong bóng lên trên lại nếu chồng nhau
-            val zr = zoneRect()
-            if (zr != null) {
-                for (b in buttons) {
-                    val bl = btnLps[b.id] ?: continue
-                    val bv = btnViews[b.id] ?: continue
-                    if (Rect.intersects(zr, Rect(bl.x, bl.y, bl.x + bl.width, bl.y + bl.height))) refront(bv, bl)
-                }
-                zoneLp?.let { keepChromeOnTop(it) }
-            }
-            return
-        }
-        // đổi kích thước: giữ nguyên tâm
-        val size = dp(Store.zoneSize(this))
-        if (zlp.width != size) {
-            val (sw, sh) = screenSize()
-            val cx = zlp.x + zlp.width / 2
-            val cy = zlp.y + zlp.height / 2
-            zlp.width = size
-            zlp.height = size
-            zlp.x = (cx - size / 2).coerceIn(0, maxOf(0, sw - size))
-            zlp.y = (cy - size / 2).coerceIn(0, maxOf(0, sh - size))
-            Store.setWinPos(this, "zone", zlp.x, zlp.y, isLand())
-            updateWin(zv, zlp)
-        }
-        configureZone(update = true)
-    }
-
-    private fun buildZoneSection(c: LinearLayout) {
-        val l = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        l.topMargin = dp(6)
-        c.addView(toggleRow("Vùng kéo cam", Store.zoneOn(this)) {
-            Store.setZoneOn(this, it)
-            updateZone()
-            refreshPanel()
-        }, l)
-        if (!Store.zoneOn(this)) return
-        if (Store.tapMode(this) != TAP_ACC || Build.VERSION.SDK_INT < 26) {
-            val n = label(
-                if (Build.VERSION.SDK_INT < 26) "Vùng kéo cần Android 8.0 trở lên."
-                else "Vùng kéo chỉ chạy ở chế độ Trợ năng (hiện đang Gỡ lỗi WiFi, chế độ này đã kéo cam trực tiếp được).",
-                11f, Theme.MUTED
-            )
-            n.setPadding(dp(2), dp(4), dp(2), 0)
-            c.addView(n)
-            return
-        }
-        c.addView(sliderRow("Kích thước", 80, 500, Store.zoneSize(this), { "${it}dp" }) { v, _ ->
-            Store.setZoneSize(this, v)
-            updateZone()
-        })
-        c.addView(sliderRow("Độ trong", 0, 100, Store.zoneAlpha(this), { "$it%" }) { v, _ ->
-            Store.setZoneAlpha(this, v)
-            configureZone(update = true)
-        })
-        c.addView(sliderRow("Độ nhạy", 30, 400, Store.zoneSens(this), { "$it%" }) { v, _ ->
-            Store.setZoneSens(this, v)
-        })
-        val n = label(
-            "Kéo ô VÙNG KÉO CAM và chấm ĐÍCH đến vị trí mong muốn. Khi chạy: kéo ngón trong vùng -> app kéo ngón ảo từ chấm ĐÍCH (đặt chấm ĐÍCH lên khu vực xoay cam của game, ngoài vùng kéo).",
-            11f, Theme.MUTED
-        )
-        n.setPadding(dp(2), dp(4), dp(2), 0)
-        c.addView(n)
     }
 
     // ---------------------------------------------------------------- tâm ảo + vòng tròn
@@ -1653,8 +1262,6 @@ class MacroService : AccessibilityService() {
         c.addView(View(this), LinearLayout.LayoutParams(1, dp(8)))
         buildCrossSection(c)
         c.addView(View(this), LinearLayout.LayoutParams(1, dp(8)))
-        buildZoneSection(c)
-        c.addView(View(this), LinearLayout.LayoutParams(1, dp(8)))
 
         val r1 = LinearLayout(this)
         r1.orientation = LinearLayout.HORIZONTAL
@@ -2200,14 +1807,6 @@ class MacroService : AccessibilityService() {
             }
         }
 
-        if (dragBusy()) {
-            // đang kéo cam bằng vùng kéo: gửi riêng sẽ HUỶ nét kéo -> gộp cú chạm vào gesture kéo
-            pendingTaps.add(PendingTap(loc[0] + v.width / 2f, loc[1] + v.height / 2f) { finish() })
-            v.flashFx()
-            handler.postAtTime({ finish() }, chainToken, SystemClock.uptimeMillis() + 1500)
-            pumpDrag()
-            return
-        }
         val path = Path()
         path.moveTo(loc[0] + v.width / 2f, loc[1] + v.height / 2f)
         val stroke = GestureDescription.StrokeDescription(path, 0L, 10L)

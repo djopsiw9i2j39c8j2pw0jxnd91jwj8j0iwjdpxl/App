@@ -240,64 +240,6 @@ class BubbleView(ctx: Context, private val logo: Bitmap?) : View(ctx) {
     }
 }
 
-/** Vùng kéo camera (isTarget = false) hoặc điểm đích của ngón ảo (isTarget = true). */
-class ZoneView(ctx: Context, val isTarget: Boolean) : View(ctx) {
-    var editing = false
-        set(v) { field = v; invalidate() }
-    var pressedFx = false
-        set(v) { field = v; invalidate() }
-
-    private val p = Paint(Paint.ANTI_ALIAS_FLAG)
-
-    override fun onDraw(c: Canvas) {
-        val d = resources.displayMetrics.density
-        val w = width.toFloat()
-        val h = height.toFloat()
-        p.shader = null
-        if (isTarget) {
-            val r = minOf(w, h) / 2f - 2f * d
-            p.style = Paint.Style.FILL
-            p.color = Theme.LIME
-            p.alpha = if (pressedFx) 90 else 40
-            c.drawCircle(w / 2f, h / 2f, r, p)
-            p.style = Paint.Style.STROKE
-            p.strokeWidth = 2f * d
-            p.color = Theme.LIME
-            p.alpha = 230
-            c.drawCircle(w / 2f, h / 2f, r, p)
-            c.drawLine(w / 2f - r * 0.5f, h / 2f, w / 2f + r * 0.5f, h / 2f, p)
-            c.drawLine(w / 2f, h / 2f - r * 0.5f, w / 2f, h / 2f + r * 0.5f, p)
-            if (editing) label(c, "ĐÍCH", w / 2f, h + 0f, 9f * d, true)
-        } else {
-            val rr = 22f * d
-            p.style = Paint.Style.FILL
-            p.color = Theme.ACCENT
-            p.alpha = if (pressedFx) 90 else 36
-            c.drawRoundRect(2f * d, 2f * d, w - 2f * d, h - 2f * d, rr, rr, p)
-            p.style = Paint.Style.STROKE
-            p.strokeWidth = 2f * d
-            p.color = Theme.ACCENT
-            p.alpha = 220
-            p.pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f * d, 8f * d), 0f)
-            c.drawRoundRect(2f * d, 2f * d, w - 2f * d, h - 2f * d, rr, rr, p)
-            p.pathEffect = null
-            label(c, if (editing) "VÙNG KÉO CAM" else "CAM", w / 2f, h / 2f, 13f * d, false)
-        }
-    }
-
-    private fun label(c: Canvas, text: String, cx: Float, cy: Float, size: Float, below: Boolean) {
-        p.style = Paint.Style.FILL
-        p.typeface = Typeface.DEFAULT_BOLD
-        p.textAlign = Paint.Align.CENTER
-        p.textSize = size
-        p.color = Theme.TEXT
-        p.alpha = 220
-        val fm = p.fontMetrics
-        val y = if (below) cy - (fm.descent) - 2f else cy - (fm.ascent + fm.descent) / 2f
-        c.drawText(text, cx, y, p)
-    }
-}
-
 /** Tâm ảo ở giữa màn hình + (tuỳ chọn) vòng tròn quanh tâm. Mọi kích thước tính bằng px. */
 class CrosshairView(ctx: Context) : View(ctx) {
     var showCross = true
