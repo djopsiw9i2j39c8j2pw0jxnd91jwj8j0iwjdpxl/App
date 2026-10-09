@@ -77,6 +77,11 @@ object AdbClient {
     var grabbed = false
         private set
 
+    /** true = đang nối vào tiến trình NỀN (GhostTouch daemon) qua loopback: không còn phụ thuộc ADB / Wi-Fi. */
+    @Volatile
+    var viaDaemon = false
+        private set
+
     @Volatile
     private var grabNote = ""
 
@@ -106,12 +111,14 @@ object AdbClient {
     fun supported(): Boolean = Build.VERSION.SDK_INT >= 30
     fun isConnected(): Boolean = state == State.CONNECTED
 
+    private fun dTag(): String = if (viaDaemon) " · chạy nền, không cần Wi-Fi" else ""
+
     fun statusText(): String = when {
         !supported() -> "Cần Android 11 trở lên để dùng Gỡ lỗi WiFi"
-        state == State.CONNECTED && ghostReady && takeover && grabbed -> "●  Đã kết nối · chạm hợp nhất (1 luồng, không mất ngón thật)"
+        state == State.CONNECTED && ghostReady && takeover && grabbed -> "●  Đã kết nối · chạm hợp nhất (1 luồng, không mất ngón thật)" + dTag()
         state == State.CONNECTED && ghostReady && takeover -> "●  Đã kết nối · tiếp quản ngón thật" +
-                (if (grabNote.isNotEmpty()) " · chưa giành được cảm ứng: $grabNote" else if (armOn) " · đang chờ giành cảm ứng" else "")
-        state == State.CONNECTED && ghostReady -> "●  Đã kết nối · ngón tay phụ (không chặn ngón thật)"
+                (if (grabNote.isNotEmpty()) " · chưa giành được cảm ứng: $grabNote" else if (armOn) " · đang chờ giành cảm ứng" else "") + dTag()
+        state == State.CONNECTED && ghostReady -> "●  Đã kết nối · ngón tay phụ (không chặn ngón thật)" + dTag()
         state == State.CONNECTED -> "●  Đã kết nối · chạm bằng input tap" +
                 (if (ghostNote.isNotEmpty()) " · $ghostNote" else "")
         state == State.CONNECTING -> "…  Đang kết nối"
@@ -311,6 +318,18 @@ object AdbClient {
         notifyUi()
         bg.execute {
             try {
+                // Có tiến trình nền đang sống thì nối thẳng (KHÔNG cần ADB, KHÔNG cần Wi-Fi)
+                if (Store.daemon(app) && connectDaemon(app) == 1) {
+                    if (!wantUp) {
+                        closeQuietly()
+                        return@execute
+                    }
+                    viaDaemon = true
+                    lastError = ""
+                    state = State.CONNECTED
+                    notifyUi()
+                    return@execute
+                }
                 val m = manager(app)
                 val f = discover(app, "_adb-tls-connect._tcp", 8000L)
                     ?: throw IllegalStateException("không thấy dịch vụ Gỡ lỗi không dây (đã bật chưa? có Wi-Fi chưa?)")
@@ -331,7 +350,7 @@ object AdbClient {
                 t.isDaemon = true
                 t.start()
                 // Đã chạm được bằng input tap rồi; giờ thử bật "ngón tay phụ" (nếu máy cho phép thì tự dùng).
-                startGhost(app, m)
+                if (Store.daemon(app)) startDaemon(app, m) else startGhost(app, m)
             } catch (t: Throwable) {
                 closeQuietly()
                 lastError = friendly(t)
@@ -441,6 +460,171 @@ object AdbClient {
 
     // ------------------------------------------------------------------ ngón tay phụ (GhostTouch)
 
+    /**
+     * Nối vào tiến trình nền qua loopback. 1 = thành công (ngón phụ sẵn sàng), 2 = tiến trình nền sống nhưng báo lỗi
+     * khởi tạo (ghostNote có lý do), 0 = không nối được (chưa có tiến trình nền).
+     */
+    private fun connectDaemon(app: Context): Int {
+        val port = Store.daemonPort(app)
+        val token = Store.daemonToken(app)
+        var sk: java.net.Socket? = null
+        try {
+            sk = java.net.Socket()
+            sk.tcpNoDelay = true
+            sk.connect(java.net.InetSocketAddress("127.0.0.1", port), 800)
+            val outs = sk.getOutputStream()
+            val ins = sk.getInputStream()
+            ghostReady = false
+            ghostNote = "đang nối tiến trình nền…"
+            ghostStream = sk
+            ghostOut = outs
+            outs.write("AUTH $token\n".toByteArray())
+            outs.flush()
+            val latch = CountDownLatch(1)
+            val me = sk
+            val t = Thread { ghostReadLoop(me, ins, latch) }
+            t.isDaemon = true
+            t.start()
+            latch.await(4, TimeUnit.SECONDS)
+            if (ghostReady) return 1
+            val failed = ghostNote.isNotEmpty() && !ghostNote.startsWith("đang")
+            // đóng socket (không gửi Q: nếu là lỗi khởi tạo thì daemon tự thoát)
+            ghostStream = null
+            ghostOut = null
+            try {
+                sk.close()
+            } catch (_: Throwable) {
+            }
+            return if (failed) 2 else 0
+        } catch (_: Throwable) {
+            ghostStream = null
+            ghostOut = null
+            ghostReady = false
+            try {
+                sk?.close()
+            } catch (_: Throwable) {
+            }
+            ghostNote = ""
+            return 0
+        }
+    }
+
+    /**
+     * Khởi động GhostTouch thành tiến trình nền (qua ADB, cần Wi-Fi 1 lần), rồi nối vào nó qua loopback và
+     * NGẮT ADB. Từ đó tắt Wi-Fi / dùng 4G vẫn chạm bình thường cho tới khi khởi động lại máy.
+     * Không khởi động được thì lùi về cách cũ (GhostTouch gắn vào ADB).
+     */
+    private fun startDaemon(app: Context, m: AbsAdbConnectionManager) {
+        ghostReady = false
+        ghostNote = "đang khởi động tiến trình nền…"
+        notifyUi()
+        try {
+            val pkg = app.packageName
+            val port = Store.daemonPort(app)
+            val token = Store.daemonToken(app)
+            // pkill: dọn tiến trình nền cũ (nếu có) cho khỏi chiếm cổng. Tên lớp được ghép từ biến C ở dưới và
+            // mẫu pkill có [G], nên dòng lệnh của chính shell này KHÔNG chứa chuỗi "macrosniper.app.GhostTouch"
+            // liền nhau -> pkill không tự giết shell đang chạy lệnh.
+            // setsid + nohup + & : tách khỏi phiên ADB để sống tiếp khi ngắt ADB / tắt Wi-Fi.
+            val cmd = "exec:pkill -f 'macrosniper.app.[G]hostTouch' >/dev/null 2>&1; sleep 0.3; " +
+                    "C=com.macrosniper.app.Ghost; " +
+                    "if command -v setsid >/dev/null 2>&1; then S=setsid; else S=; fi; " +
+                    "CLASSPATH=\"\$(pm path $pkg | head -n 1 | cut -d: -f2)\" " +
+                    "\$S nohup app_process / \${C}Touch daemon $port $token " +
+                    ">/dev/null 2>&1 </dev/null & echo started"
+            val s = m.openStream(cmd)
+            try {
+                val r = BufferedReader(InputStreamReader(s.openInputStream()))
+                val t0 = SystemClock.uptimeMillis()
+                while (SystemClock.uptimeMillis() - t0 < 4000L) {
+                    val l = r.readLine() ?: break
+                    if (l.contains("started")) break
+                }
+            } catch (_: Throwable) {
+            }
+            try {
+                (s as? Closeable)?.close()
+            } catch (_: Throwable) {
+            }
+            var res = 0
+            for (i in 0 until 14) {
+                res = connectDaemon(app)
+                if (res != 0) break
+                Thread.sleep(500)
+            }
+            if (res == 1) {
+                // đã nối được tiến trình nền -> bỏ ADB, từ giờ không cần Wi-Fi nữa
+                viaDaemon = true
+                ghostNote = ""
+                dropAdbKeepGhost()
+                notifyUi()
+                return
+            }
+            // lỗi khởi tạo / không lên được -> cách cũ (GhostTouch gắn vào ADB) để vẫn dùng được
+            if (res == 2) {
+                val why = ghostNote
+                startGhost(app, m)
+                if (!ghostReady) ghostNote = why
+            } else {
+                startGhost(app, m)
+                if (!ghostReady) ghostNote = "tiến trình nền không lên được · " + ghostNote
+            }
+        } catch (t: Throwable) {
+            ghostNote = "chạy nền lỗi: " + (t.message ?: t.javaClass.simpleName).take(40)
+            startGhost(app, m)
+        }
+        notifyUi()
+    }
+
+    /** Đóng ADB nhưng giữ nguyên kết nối loopback tới tiến trình nền. */
+    private fun dropAdbKeepGhost() {
+        val o = outS
+        val st = stream
+        val m = mgr
+        mgr = null
+        stream = null
+        outS = null
+        val t = Thread {
+            try {
+                o?.close()
+            } catch (_: Throwable) {
+            }
+            try {
+                (st as? Closeable)?.close()
+            } catch (_: Throwable) {
+            }
+            try {
+                (m as? Closeable)?.close()
+            } catch (_: Throwable) {
+            }
+        }
+        t.isDaemon = true
+        t.start()
+    }
+
+    /** Dừng HẲN tiến trình nền (giải phóng cảm ứng + bộ nhớ). Lần sau cần Wi-Fi để khởi động lại. */
+    fun stopDaemon(ctx: Context) {
+        val app = ctx.applicationContext
+        bg.execute {
+            try {
+                if (viaDaemon) {
+                    val (o, st) = detachGhost()
+                    viaDaemon = false
+                    closeGhostIo(o, st, true)
+                    state = State.OFF
+                    wantUp = false
+                } else if (connectDaemon(app) == 1) {
+                    val (o, st) = detachGhost()
+                    closeGhostIo(o, st, true)
+                }
+                ghostNote = ""
+                lastError = "đã dừng tiến trình nền"
+            } catch (_: Throwable) {
+            }
+            notifyUi()
+        }
+    }
+
     private fun startGhost(app: Context, m: AbsAdbConnectionManager) {
         ghostReady = false
         ghostNote = "đang khởi tạo ngón phụ…"
@@ -517,6 +701,13 @@ object AdbClient {
             if (ghostNote.isEmpty()) ghostNote = "ngón phụ đã dừng"
             ghostStream = null
             ghostOut = null
+            if (viaDaemon) { // mất tiến trình nền -> về trạng thái chưa kết nối để tự nối lại (tick)
+                viaDaemon = false
+                takeover = false
+                grabbed = false
+                state = State.OFF
+                lastError = "mất tiến trình nền"
+            }
             notifyUi()
         }
     }
@@ -564,10 +755,11 @@ object AdbClient {
      * -> lệnh thoát không bao giờ được gửi -> GhostTouch vẫn sống và vẫn GIÀNH ĐỘC QUYỀN màn hình cảm ứng
      * (EVIOCGRAB) dù đã chuyển sang chế độ Trợ năng. Đó là lý do Trợ năng "nháy nhưng không click".
      */
-    private fun closeGhostIo(o: OutputStream?, st: Any?) {
+    private fun closeGhostIo(o: OutputStream?, st: Any?, quit: Boolean = true) {
         try {
-            // "P 0": huỷ tiếp quản (nhả độc quyền cảm ứng) trước, rồi "Q": thoát
-            o?.write("P 0 0 1 1\nQ\n".toByteArray())
+            // "P 0": huỷ tiếp quản (nhả độc quyền cảm ứng) trước, rồi "Q": thoát.
+            // Tiến trình nền thì KHÔNG gửi Q (để nó sống tiếp, lần sau nối lại không cần Wi-Fi); nó tự nhả cảm ứng khi mất kết nối.
+            o?.write((if (quit) "P 0 0 1 1\nQ\n" else "P 0 0 1 1\n").toByteArray())
             o?.flush()
         } catch (_: Throwable) {
         }
@@ -582,14 +774,18 @@ object AdbClient {
     }
 
     private fun closeGhost() {
+        val dm = viaDaemon
+        viaDaemon = false
         val (o, st) = detachGhost()
         if (o == null && st == null) return
-        val t = Thread { closeGhostIo(o, st) }
+        val t = Thread { closeGhostIo(o, st, !dm) }
         t.isDaemon = true
         t.start()
     }
 
     private fun closeQuietly() {
+        val dm = viaDaemon
+        viaDaemon = false
         val (go, gst) = detachGhost()
         val o = outS
         val st = stream
@@ -599,7 +795,7 @@ object AdbClient {
         outS = null
         // đóng theo thứ tự (ngón phụ trước, rồi shell, rồi kết nối) và KHÔNG chặn luồng chính
         val t = Thread {
-            closeGhostIo(go, gst)
+            closeGhostIo(go, gst, !dm)
             try {
                 o?.close()
             } catch (_: Throwable) {
@@ -656,11 +852,12 @@ object AdbClient {
      */
     fun tap(x: Int, y: Int, rot: Int, w: Int, h: Int, done: () -> Unit): Boolean {
         val o = outS
-        if (state != State.CONNECTED || o == null) return false
+        val g = ghostOut
+        if (state != State.CONNECTED) return false
+        if (!(ghostReady && g != null) && o == null) return false
         val id = seq.incrementAndGet()
         acks[id] = done
 
-        val g = ghostOut
         if (ghostReady && g != null) {
             io.execute {
                 try {
@@ -679,7 +876,7 @@ object AdbClient {
         io.execute {
             try {
                 // __MS''DONE: dấu '' để dòng lệnh bị shell "dội" lại không chứa chuỗi đánh dấu thật
-                o.write("input tap $x $y; echo __MS''DONE_$id\n".toByteArray())
+                o!!.write("input tap $x $y; echo __MS''DONE_$id\n".toByteArray())
                 o.flush()
             } catch (_: Throwable) {
                 acks.remove(id)?.invoke()

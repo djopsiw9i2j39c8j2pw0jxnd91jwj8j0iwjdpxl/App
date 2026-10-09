@@ -896,26 +896,27 @@ public final class GhostTouch implements Toucher {
 
     // ------------------------------------------------------------------ main
 
-    public static void main(String[] args) {
-        PrintStream so = new PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), true);
-        SO = so;
-        Toucher g;
+    /**
+     * Dò + khởi tạo bộ chạm. Trả về bộ chạm (hoặc null) và ghi dòng "READY ..." / "FAIL ..." vào [line][0].
+     * (Tách riêng để dùng chung cho chế độ stdin/stdout và chế độ daemon.)
+     */
+    private static Toucher initToucher(String[] line) {
         try {
             Dev d = pickTouchscreen(parseProps(runGetevent()));
             if (d == null) {
-                so.println("FAIL không tìm thấy màn hình cảm ứng đa chạm");
-                return;
+                line[0] = "FAIL không tìm thấy màn hình cảm ứng đa chạm";
+                return null;
             }
             if (d.slot.max < 1) {
-                so.println("FAIL màn hình cảm ứng chỉ có 1 slot");
-                return;
+                line[0] = "FAIL màn hình cảm ứng chỉ có 1 slot";
+                return null;
             }
             Toucher direct = null;
             String why = "";
             try {
                 GhostTouch gt = new GhostTouch(d, d.path, is64());
                 direct = gt;
-                so.println("READY " + d.path + " " + (d.x.max + 1) + " " + (d.y.max + 1) + " " + gt.ghostSlot + " WRITE");
+                line[0] = "READY " + d.path + " " + (d.x.max + 1) + " " + (d.y.max + 1) + " " + gt.ghostSlot + " WRITE";
             } catch (Throwable t) {
                 why = String.valueOf(t.getMessage());
             }
@@ -935,28 +936,30 @@ public final class GhostTouch implements Toucher {
                         }
                     }));
                     direct = tk;
-                    so.println("READY " + d.path + " " + (d.x.max + 1) + " " + (d.y.max + 1) + " 0 TAKEOVER");
+                    line[0] = "READY " + d.path + " " + (d.x.max + 1) + " " + (d.y.max + 1) + " 0 TAKEOVER";
                 } catch (Throwable t2) {
-                    so.println("FAIL không ghi được " + d.path + " (" + why + "); tiếp quản lỗi: " + t2.getMessage());
-                    return;
+                    line[0] = "FAIL không ghi được " + d.path + " (" + why + "); tiếp quản lỗi: " + t2.getMessage();
+                    return null;
                 }
             }
-            g = direct;
+            return direct;
         } catch (Throwable t) {
-            so.println("FAIL " + t);
-            return;
+            line[0] = "FAIL " + t;
+            return null;
         }
+    }
 
+    /**
+     * Vòng đọc lệnh: "P early rot w h" / "T id x y rot w h hold" / "Q".
+     * Trả về true nếu nhận "Q" (yêu cầu thoát hẳn), false nếu hết dữ liệu (đối phương ngắt).
+     */
+    private static boolean serve(BufferedReader in, PrintStream so, Toucher g) {
         try {
-            android.os.Process.setThreadPriority(-8);
-        } catch (Throwable ignored) {
-        }
-        try (BufferedReader in = new BufferedReader(new InputStreamReader(System.in))) {
             String line;
             while ((line = in.readLine()) != null) {
                 line = line.trim();
                 if (line.isEmpty()) continue;
-                if (line.equals("Q")) break;
+                if (line.equals("Q")) return true;
                 String[] p = line.split("\\s+");
                 if (p[0].equals("P") && p.length >= 5) {
                     try {
@@ -974,6 +977,100 @@ public final class GhostTouch implements Toucher {
                     }
                 }
             }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    /**
+     * Chế độ DAEMON: app khởi động tiến trình này MỘT LẦN qua ADB (cần Wi-Fi), sau đó tiến trình sống độc lập
+     * (không phụ thuộc ADB / Wi-Fi) và nhận lệnh qua cổng loopback 127.0.0.1:[port]. Mỗi kết nối phải mở đầu bằng
+     * "AUTH [token]" (token ngẫu nhiên do app tạo) để app khác trên máy không điều khiển cảm ứng được.
+     * Mỗi lần app ngắt kết nối, daemon tự NHẢ độc quyền cảm ứng rồi chờ kết nối kế tiếp. Nhận "Q" thì thoát hẳn.
+     */
+    private static void runDaemon(Toucher g, String readyLine, int port, String token) {
+        final PrintStream sink = new PrintStream(new java.io.OutputStream() {
+            @Override
+            public void write(int b) {
+            }
+        });
+        SO = sink;
+        java.net.ServerSocket ss;
+        try {
+            ss = new java.net.ServerSocket(port, 2, java.net.InetAddress.getByName("127.0.0.1"));
+        } catch (Throwable t) {
+            return; // cổng bận -> thoát; app sẽ báo không khởi động được
+        }
+        try {
+            android.os.Process.setThreadPriority(-8);
+        } catch (Throwable ignored) {
+        }
+        while (true) {
+            java.net.Socket sk = null;
+            try {
+                sk = ss.accept();
+                sk.setTcpNoDelay(true);
+                sk.setSoTimeout(5000);
+                BufferedReader in = new BufferedReader(new InputStreamReader(sk.getInputStream()));
+                String auth = in.readLine();
+                if (auth == null || !auth.trim().equals("AUTH " + token)) {
+                    sk.close();
+                    continue;
+                }
+                sk.setSoTimeout(0);
+                PrintStream out = new PrintStream(sk.getOutputStream(), true);
+                SO = out;
+                out.println(readyLine);
+                if (g == null) { // khởi tạo lỗi: báo lý do cho app rồi thoát
+                    sk.close();
+                    System.exit(0);
+                }
+                boolean quit = serve(in, out, g);
+                try {
+                    g.config(false, 0, 1, 1); // nhả độc quyền cảm ứng khi app ngắt
+                } catch (Throwable ignored) {
+                }
+                SO = sink;
+                sk.close();
+                if (quit) System.exit(0);
+            } catch (Throwable t) {
+                SO = sink;
+                try {
+                    if (sk != null) sk.close();
+                } catch (Throwable ignored) {
+                }
+                try {
+                    Thread.sleep(200);
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        String[] line = new String[1];
+        boolean daemon = args.length >= 3 && args[0].equals("daemon");
+        PrintStream so = new PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), true);
+        SO = so;
+        Toucher g = initToucher(line);
+        if (daemon) {
+            int port;
+            try {
+                port = Integer.parseInt(args[1]);
+            } catch (Throwable t) {
+                return;
+            }
+            runDaemon(g, line[0], port, args[2]);
+            return;
+        }
+        so.println(line[0]);
+        if (g == null) return;
+        try {
+            android.os.Process.setThreadPriority(-8);
+        } catch (Throwable ignored) {
+        }
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(System.in))) {
+            serve(in, so, g);
         } catch (Throwable ignored) {
         }
         System.exit(0);
