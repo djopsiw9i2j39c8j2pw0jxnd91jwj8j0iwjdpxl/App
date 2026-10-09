@@ -211,6 +211,90 @@ public final class GhostTouch implements Toucher {
         }
     }
 
+    // ------------------------------------------------------------------ báo vị trí ngón THẬT cho app (để nút main "xuyên" nhận được cú chạm)
+
+    /**
+     * Gom trạng thái ngón thật từ evdev; mỗi khi có ngón xuống / nhấc thì in 1 dòng "F tid:xPermille:yPermille ..."
+     * (danh sách mọi ngón đang đặt; "F" trơn = không còn ngón nào). Toạ độ là tỉ lệ 0..1000 theo trục RAW của màn hình cảm ứng,
+     * app tự quy đổi theo hướng màn hình. Ngón phụ của macro ([ghostSlot]) bị loại.
+     */
+    static final class Fingers {
+        private final Axis ax, ay;
+        private final int ghostSlot;
+        private final boolean[] act, hx, hy;
+        private final int[] rx, ry, tid;
+        private int cur = 0;
+        private boolean edge = false;
+        private String last = "F";
+
+        Fingers(Axis ax, Axis ay, int ghostSlot, int slots) {
+            this.ax = ax;
+            this.ay = ay;
+            this.ghostSlot = ghostSlot;
+            int n = Math.max(2, Math.min(64, slots));
+            act = new boolean[n];
+            hx = new boolean[n];
+            hy = new boolean[n];
+            rx = new int[n];
+            ry = new int[n];
+            tid = new int[n];
+        }
+
+        void feed(int type, int code, int value) {
+            if (type == EV_ABS) {
+                if (code == ABS_MT_SLOT) {
+                    cur = (value >= 0 && value < act.length) ? value : -1;
+                } else if (cur >= 0) {
+                    if (code == ABS_MT_TRACKING_ID) {
+                        act[cur] = value != -1;
+                        tid[cur] = value;
+                        if (value == -1) {
+                            hx[cur] = false;
+                            hy[cur] = false;
+                        }
+                        edge = true;
+                    } else if (code == ABS_MT_POSITION_X) {
+                        rx[cur] = value;
+                        hx[cur] = true;
+                    } else if (code == ABS_MT_POSITION_Y) {
+                        ry[cur] = value;
+                        hy[cur] = true;
+                    }
+                }
+            } else if (type == EV_SYN && code == SYN_REPORT) {
+                if (edge) {
+                    edge = false;
+                    emit();
+                }
+            }
+        }
+
+        void reset() {
+            for (int i = 0; i < act.length; i++) {
+                act[i] = false;
+                hx[i] = false;
+                hy[i] = false;
+            }
+            cur = 0;
+            edge = false;
+            emit();
+        }
+
+        private void emit() {
+            StringBuilder sb = new StringBuilder("F");
+            for (int i = 0; i < act.length; i++) {
+                if (i == ghostSlot || !act[i] || !hx[i] || !hy[i]) continue;
+                int px = (int) Math.round((rx[i] - ax.min) * 1000.0 / Math.max(1, ax.max - ax.min));
+                int py = (int) Math.round((ry[i] - ay.min) * 1000.0 / Math.max(1, ay.max - ay.min));
+                sb.append(' ').append(tid[i]).append(':').append(px).append(':').append(py);
+            }
+            String s = sb.toString();
+            if (s.equals(last)) return;
+            last = s;
+            report(s);
+        }
+    }
+
     // ------------------------------------------------------------------ theo dõi ngón tay THẬT đang đặt trên màn hình
 
     static final class Tracker implements Runnable {
@@ -222,7 +306,10 @@ public final class GhostTouch implements Toucher {
         volatile int lastRealSlot = 0;
         volatile boolean ok = false;
 
-        Tracker(String path, boolean is64, int ghostSlot, int slots) {
+        private final Fingers fingers;
+
+        Tracker(String path, boolean is64, int ghostSlot, int slots, Axis ax, Axis ay) {
+            this.fingers = new Fingers(ax, ay, ghostSlot, slots);
             this.path = path;
             this.evSize = is64 ? 24 : 16;
             this.ghostSlot = ghostSlot;
@@ -251,6 +338,7 @@ public final class GhostTouch implements Toucher {
                         int type = bb.getShort() & 0xFFFF;
                         int code = bb.getShort() & 0xFFFF;
                         int value = bb.getInt();
+                        fingers.feed(type, code, value);
                         if (type != EV_ABS) continue;
                         if (code == ABS_MT_SLOT) {
                             if (value >= 0 && value < active.length) {
@@ -383,6 +471,7 @@ public final class GhostTouch implements Toucher {
 
         private final boolean[] act, hasX, hasY;
         private final int[] rawX, rawY, tid;
+        private final Fingers fingers;
         private int cur = 0;
         private boolean dirty = false;
         private int rot = 0, w = 1, h = 1;
@@ -415,6 +504,7 @@ public final class GhostTouch implements Toucher {
             rawX = new int[nSlots];
             rawY = new int[nSlots];
             tid = new int[nSlots];
+            fingers = new Fingers(dev.x, dev.y, -1, nSlots);
         }
 
         // ---- cấu hình từ app: early = đang ở chế độ chạy macro (giành cảm ứng + bơm hợp nhất)
@@ -489,6 +579,7 @@ public final class GhostTouch implements Toucher {
             started = false;
             dirty = false;
             cur = 0;
+            fingers.reset();
             for (int i = 0; i < nSlots; i++) {
                 act[i] = false;
                 hasX[i] = false;
@@ -564,6 +655,7 @@ public final class GhostTouch implements Toucher {
         /** Nạp 1 sự kiện evdev; SYN_REPORT chỉ đánh dấu "có thay đổi" — việc bơm làm ở flush(). */
         void feed(int type, int code, int value) {
             synchronized (lock) {
+                fingers.feed(type, code, value);
                 if (type == EV_ABS) {
                     if (code == ABS_MT_SLOT) {
                         cur = (value >= 0 && value < nSlots) ? value : -1;
@@ -831,7 +923,7 @@ public final class GhostTouch implements Toucher {
         this.is64 = is64;
         this.ghostSlot = dev.slot.max; // slot cuối: ít khi trùng với ngón thật
         this.out = new FileOutputStream(writePath);
-        this.tracker = new Tracker(writePath, is64, ghostSlot, dev.slot.max + 1);
+        this.tracker = new Tracker(writePath, is64, ghostSlot, dev.slot.max + 1, dev.x, dev.y);
         Thread t = new Thread(tracker, "ghost-tracker");
         t.setDaemon(true);
         t.start();

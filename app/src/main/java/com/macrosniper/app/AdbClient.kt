@@ -103,6 +103,13 @@ object AdbClient {
     /** Ai muốn biết trạng thái đổi (bảng nổi, MainActivity) thì đăng ký ở đây. */
     val listeners = CopyOnWriteArrayList<() -> Unit>()
 
+    /** Ngón THẬT đang đặt trên màn hình: mỗi phần tử = [tracking id, x‰, y‰] (tỉ lệ 0..1000 theo trục RAW). Gọi từ luồng nền. */
+    @Volatile
+    var fingerListener: ((List<IntArray>) -> Unit)? = null
+
+    /** Có nhận được vị trí ngón thật từ GhostTouch không (cần cho nút main "cảm ứng xuyên"). */
+    fun fingersAvailable(): Boolean = state == State.CONNECTED && ghostReady
+
     fun supported(): Boolean = Build.VERSION.SDK_INT >= 30
     fun isConnected(): Boolean = state == State.CONNECTED
 
@@ -494,6 +501,22 @@ object AdbClient {
                         grabbed = line.startsWith("GRAB 1")
                         grabNote = if (grabbed) "" else line.removePrefix("GRAB 0").trim().take(70)
                         notifyUi()
+                    }
+                    line == "F" || line.startsWith("F ") -> {
+                        val pts = ArrayList<IntArray>()
+                        for (tok in line.removePrefix("F").trim().split(' ')) {
+                            val q = tok.split(':')
+                            if (q.size == 3) {
+                                val a = q[0].toIntOrNull()
+                                val b = q[1].toIntOrNull()
+                                val c = q[2].toIntOrNull()
+                                if (a != null && b != null && c != null) pts.add(intArrayOf(a, b, c))
+                            }
+                        }
+                        try {
+                            fingerListener?.invoke(pts)
+                        } catch (_: Throwable) {
+                        }
                     }
                     line.startsWith("D ") -> {
                         line.substring(2).trim().substringBefore(' ').toIntOrNull()?.let { acks.remove(it)?.invoke() }

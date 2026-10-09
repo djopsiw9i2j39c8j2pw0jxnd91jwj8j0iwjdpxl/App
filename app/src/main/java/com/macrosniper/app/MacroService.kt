@@ -88,6 +88,10 @@ class MacroService : AccessibilityService() {
     private var lastAdbWarn = 0L
     private val adbListener: () -> Unit = {
         if (mode == Mode.EDIT && selectedId == -1) refreshPanel()
+        // trạng thái Gỡ lỗi WiFi đổi -> nút main "xuyên" có thể bật / tắt được -> cập nhật cờ cảm ứng
+        if (mode == Mode.RUN && buttons.any { it.kind == Kind.MAIN && it.passThru } &&
+            buttons.any { it.kind == Kind.MAIN && it.passThru && (isPass(it) == (btnLps[it.id]?.flags?.and(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0)) }
+        ) applyModeUi(animate = false)
     }
     private var logoBmp: Bitmap? = null
 
@@ -153,6 +157,7 @@ class MacroService : AccessibilityService() {
         handler.postDelayed(watchdog, 1000)
         AdbClient.listeners.remove(adbListener)
         AdbClient.listeners.add(adbListener)
+        AdbClient.fingerListener = { pts -> handler.post { onFingers(pts) } }
         if (Store.isRunning(this)) startOverlay()
     }
 
@@ -188,6 +193,7 @@ class MacroService : AccessibilityService() {
     }
 
     private fun shutdown() {
+        AdbClient.fingerListener = null
         AdbClient.listeners.remove(adbListener)
         AdbClient.disconnect()
         handler.removeCallbacks(watchdog)
@@ -285,7 +291,7 @@ class MacroService : AccessibilityService() {
         lp.flags = if (touchable) lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
         else lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         lp.alpha = if (!touchable && Build.VERSION.SDK_INT >= 31 &&
-            builtType != WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+            lp.type != WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
         ) 0.8f else 1f
     }
 
@@ -296,7 +302,40 @@ class MacroService : AccessibilityService() {
         }
     }
 
-    private fun baseLp(w: Int, h: Int, touchable: Boolean): WindowManager.LayoutParams {
+    /**
+     * Cửa sổ KHÔNG nhận chạm khi chạy macro (nút số, nút main "xuyên", tâm / vòng) dùng loại cửa sổ Trợ năng (cửa sổ "tin cậy").
+     * Android 12+ cộng dồn độ mờ của MỌI cửa sổ nổi chồng lên điểm chạm (app khác): vượt 0.8 là CHẶN cú chạm xuống game
+     * (vd. nút số nằm trong vòng tròn quanh tâm -> chặn ống nhòm). Cửa sổ Trợ năng tin cậy thì không bị tính, nên cú chạm đi xuyên hoàn toàn.
+     * Lúc setup (cần nhận chạm + nằm dưới bảng / bong bóng) thì dùng lại loại cửa sổ thường.
+     */
+    private fun passType(): Int =
+        if (mode == Mode.RUN && Build.VERSION.SDK_INT >= 31 &&
+            builtType != WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        ) WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY else builtType
+
+    /** Nút main đang ở chế độ "cảm ứng xuyên" thật sự: bật cài đặt + có luồng đọc ngón thật (Gỡ lỗi WiFi đã kết nối). */
+    private fun isPass(b: MacroButton): Boolean =
+        b.kind == Kind.MAIN && b.passThru && Store.tapMode(this) == TAP_ADB && AdbClient.fingersAvailable()
+
+    private fun buttonType(b: MacroButton): Int =
+        if (b.kind == Kind.NUM || isPass(b)) passType() else builtType
+
+    /** Gắn lại cửa sổ với loại mới (loại cửa sổ không đổi tại chỗ được). */
+    private var retyped = false
+
+    private fun retypeWindow(v: View, lp: WindowManager.LayoutParams) {
+        try {
+            wm.removeViewImmediate(v)
+        } catch (_: Exception) {
+        }
+        try {
+            wm.addView(v, lp)
+        } catch (_: Exception) {
+        }
+        retyped = true
+    }
+
+    private fun baseLp(w: Int, h: Int, touchable: Boolean, type: Int = builtType): WindowManager.LayoutParams {
         // FLAG_SPLIT_TOUCH: cho phép ngón này chạm nút nổi, ngón kia chạm game (cửa sổ khác) CÙNG LÚC.
         // Thiếu cờ này thì khi 1 ngón đang đè nút main, mọi ngón khác bị Android dồn hết vào nút main
         // -> không xoay được camera / bấm được nút khác của game.
@@ -308,7 +347,7 @@ class MacroService : AccessibilityService() {
         if (Store.tapMode(this) == TAP_ADB) flags = flags or WindowManager.LayoutParams.FLAG_SPLIT_TOUCH
         val lp = WindowManager.LayoutParams(
             w, h,
-            builtType,
+            type,
             flags,
             PixelFormat.TRANSLUCENT
         )
@@ -380,6 +419,7 @@ class MacroService : AccessibilityService() {
             updateWin(v, lp)
         }
         syncArm()
+        if (buttons.any { it.kind == Kind.MAIN && it.passThru }) applyModeUi(animate = false)
     }
 
     /** Tự động gắn lại mọi giao diện bị hệ thống gỡ mất (máy nóng, lag, thiếu RAM...). */
@@ -537,6 +577,23 @@ class MacroService : AccessibilityService() {
             val lp = btnLps[b.id] ?: continue
             configureButton(b, v, lp, update = true)
         }
+        val cv = crossView
+        val cl = crossLp
+        if (cv != null && cl != null && cl.type != passType()) {
+            cl.type = passType()
+            applyTouchable(cl, false)
+            retypeWindow(cv, cl)
+        }
+        if (retyped) {
+            // cửa sổ vừa gắn lại nằm đè lên bảng / bong bóng -> đưa 2 thứ này lên trên lại
+            retyped = false
+            val pr = panelRoot
+            val pl = panelLp
+            if (pr != null && pl != null) refront(pr, pl)
+            val bv = bubble
+            val bl = bubbleLp
+            if (bv != null && bl != null) refront(bv, bl)
+        }
         bubble?.editing = editing
         setPanelShown(editing, animate)
     }
@@ -573,7 +630,7 @@ class MacroService : AccessibilityService() {
         if (!Store.crossOn(this) && !Store.ringOn(this)) return
         val v = CrosshairView(this)
         styleCross(v)
-        val lp = baseLp(crossSidePx(), crossSidePx(), false) // không nhận chạm, cú chạm đi xuyên xuống game
+        val lp = baseLp(crossSidePx(), crossSidePx(), false, passType()) // không nhận chạm, cú chạm đi xuyên xuống game
         placeCross(lp)
         crossView = v
         crossLp = lp
@@ -698,7 +755,7 @@ class MacroService : AccessibilityService() {
 
     private fun addButton(b: MacroButton, sw: Int, sh: Int) {
         val size = dp(b.sizeDp)
-        val lp = baseLp(size, size, true)
+        val lp = baseLp(size, size, true, buttonType(b))
         b.x = b.x.coerceIn(size / 2, maxOf(size / 2, sw - size / 2))
         b.y = b.y.coerceIn(size / 2, maxOf(size / 2, sh - size / 2))
         lp.x = b.x - size / 2
@@ -759,10 +816,81 @@ class MacroService : AccessibilityService() {
         }
     }
 
+    private fun mainPress(b: MacroButton, bv: BtnView?) {
+        bv?.pressedFx = true
+        when (b.trigger) {
+            TRIG_PRESS -> runChain(b.number)
+            TRIG_HOLD -> runChain(b.number, true)
+        }
+    }
+
+    private fun mainRelease(b: MacroButton, bv: BtnView?) {
+        bv?.pressedFx = false
+        when (b.trigger) {
+            TRIG_RELEASE -> runChain(b.number)
+            TRIG_HOLD -> cancelChain() // thả tay -> dừng lặp
+        }
+    }
+
+    // ---- nút main "cảm ứng xuyên": cửa sổ không nhận chạm, nên kích hoạt bằng vị trí ngón THẬT đọc từ /dev/input (GhostTouch)
+    private val fingerMain = HashMap<Int, Int>() // tracking id -> id nút main đang bị ngón đó giữ
+
+    private fun onFingers(pts: List<IntArray>) {
+        if (mode != Mode.RUN) {
+            if (fingerMain.isNotEmpty()) releaseAllFingers()
+            return
+        }
+        val (sw, sh) = screenSize()
+        val rot = displayRotation() and 3
+        val seen = HashSet<Int>()
+        for (p in pts) {
+            val tid = p[0]
+            seen.add(tid)
+            if (fingerMain.containsKey(tid)) continue
+            val rx = p[1] / 1000.0
+            val ry = p[2] / 1000.0
+            val nx: Double
+            val ny: Double
+            when (rot) {
+                1 -> { nx = ry; ny = 1.0 - rx }
+                2 -> { nx = 1.0 - rx; ny = 1.0 - ry }
+                3 -> { nx = 1.0 - ry; ny = rx }
+                else -> { nx = rx; ny = ry }
+            }
+            val x = nx * sw
+            val y = ny * sh
+            val hit = buttons.firstOrNull {
+                isPass(it) && hypot(x - it.x, y - it.y) <= dp(it.sizeDp) / 2.0
+            } ?: continue
+            fingerMain[tid] = hit.id
+            mainPress(hit, btnViews[hit.id])
+        }
+        val iter = fingerMain.entries.iterator()
+        while (iter.hasNext()) {
+            val e = iter.next()
+            if (e.key in seen) continue
+            iter.remove()
+            val b = buttons.firstOrNull { x -> x.id == e.value } ?: continue
+            mainRelease(b, btnViews[b.id])
+        }
+    }
+
+    private fun releaseAllFingers() {
+        val ids = fingerMain.values.toList()
+        fingerMain.clear()
+        for (id in ids) {
+            val b = buttons.firstOrNull { it.id == id } ?: continue
+            mainRelease(b, btnViews[b.id])
+        }
+    }
+
     /** Gán lại cảm ứng / độ trong / nhãn cho một nút theo chế độ hiện tại (RUN hoặc EDIT). */
     private fun configureButton(b: MacroButton, v: BtnView, lp: WindowManager.LayoutParams, update: Boolean) {
         val editing = mode == Mode.EDIT
-        applyTouchable(lp, editing || b.kind == Kind.MAIN)
+        val wantType = buttonType(b)
+        val typeChanged = lp.type != wantType
+        lp.type = wantType
+        applyTouchable(lp, editing || (b.kind == Kind.MAIN && !isPass(b)))
         v.alpha = viewAlpha(b)
         v.showTag = editing
         v.hilite = editing && b.id == selectedId
@@ -800,19 +928,11 @@ class MacroService : AccessibilityService() {
                         val replay = held && SystemClock.uptimeMillis() - cancelAt < 400L
                         held = true
                         if (replay) return@setOnTouchListener true
-                        bv.pressedFx = true
-                        when (b.trigger) {
-                            TRIG_PRESS -> runChain(b.number)
-                            TRIG_HOLD -> runChain(b.number, true)
-                        }
+                        mainPress(b, bv)
                     }
                     MotionEvent.ACTION_UP -> {
                         held = false
-                        bv.pressedFx = false
-                        when (b.trigger) {
-                            TRIG_RELEASE -> runChain(b.number)
-                            TRIG_HOLD -> cancelChain() // thả tay -> dừng lặp
-                        }
+                        mainRelease(b, bv)
                     }
                     MotionEvent.ACTION_CANCEL -> {
                         if (held && AdbClient.takeover && Store.tapMode(this) == TAP_ADB) {
@@ -828,7 +948,9 @@ class MacroService : AccessibilityService() {
                 true
             }
         }
-        if (update) updateWin(v, lp)
+        if (update) {
+            if (typeChanged) retypeWindow(v, lp) else updateWin(v, lp)
+        }
     }
 
     private fun addBubble(sw: Int, sh: Int) {
@@ -1522,6 +1644,22 @@ class MacroService : AccessibilityService() {
             val rl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             rl.topMargin = dp(4)
             c.addView(row, rl)
+            val pl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            pl.topMargin = dp(4)
+            c.addView(toggleRow("Chạm xuyên", b.passThru) { on ->
+                b.passThru = on
+                persist()
+                applyModeUi(animate = false)
+                refreshPanel()
+            }, pl)
+            val passNote = label(
+                if (!b.passThru) "Tắt: nút main nhận chạm (che phần game bên dưới)."
+                else if (Store.tapMode(this) == TAP_ADB && AdbClient.fingersAvailable()) "Bật: ngón chạm xuyên xuống game, nút main vẫn kích hoạt macro."
+                else "Bật nhưng CHƯA hoạt động: cần chế độ Gỡ lỗi WiFi đã kết nối (để đọc ngón tay). Tạm thời nút vẫn chặn cảm ứng.",
+                11f, Theme.MUTED
+            )
+            passNote.setPadding(dp(2), dp(6), dp(2), 0)
+            c.addView(passNote)
             if (b.trigger == TRIG_HOLD) {
                 val note = label("Giữ ngón tay trên nút main: chuỗi cứ lặp đi lặp lại, thả tay là dừng.", 11f, Theme.MUTED)
                 note.setPadding(dp(2), dp(6), dp(2), 0)

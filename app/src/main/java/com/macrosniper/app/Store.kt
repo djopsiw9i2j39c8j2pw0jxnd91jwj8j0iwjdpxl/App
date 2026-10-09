@@ -31,6 +31,7 @@ data class MacroButton(
     var delayMs: Int,      // chỉ NUM: độ trễ trước khi bấm (tốc độ ấn)
     var mainNo: Int,       // chỉ NUM: thuộc main số mấy (0 = chưa nối main nào)
     var trigger: Int,      // chỉ MAIN: TRIG_PRESS / TRIG_RELEASE / TRIG_HOLD
+    var passThru: Boolean = false, // chỉ MAIN: cho cảm ứng xuyên xuống game (cần chế độ Gỡ lỗi WiFi để vẫn kích hoạt được)
     var name: String = "",  // tên tuỳ chỉnh hiện trên nút (rỗng = hiện số / mainN mặc định)
     // Vị trí nhớ RIÊNG cho từng hướng màn hình (-1 = chưa đặt). x,y ở trên là vị trí của hướng đang hiển thị.
     var pX: Int = -1, var pY: Int = -1,   // hướng dọc
@@ -106,6 +107,7 @@ object Store {
             o.put("main", b.mainNo)
             o.put("trigger", b.trigger)
             o.put("name", b.name)
+            o.put("pass", b.passThru)
             o.put("pX", b.pX)
             o.put("pY", b.pY)
             o.put("lX", b.lX)
@@ -134,6 +136,7 @@ object Store {
                     // tương thích dữ liệu cũ (chỉ có onRelease true/false)
                     trigger = o.optInt("trigger", if (o.optBoolean("onRelease", false)) TRIG_RELEASE else TRIG_PRESS),
                     name = o.optString("name", ""),
+                    passThru = o.optBoolean("pass", false),
                     pX = o.optInt("pX", -1),
                     pY = o.optInt("pY", -1),
                     lX = o.optInt("lX", -1),
