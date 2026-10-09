@@ -95,8 +95,8 @@ class MacroService : AccessibilityService() {
                         // đề phòng hệ thống không báo xoay màn hình: tự dựng lại khi đổi hướng
                         val ll = lastLand
                         if (ll != null && ll != isLand()) rebuildAll()
-                        // đổi chế độ chạm (từ app chính hoặc bảng nổi) -> dựng lại để áp đúng cờ cửa sổ
-                        else if (builtTapMode != Store.tapMode(this@MacroService)) rebuildAll()
+                        // đổi chế độ chạm (từ app chính hoặc bảng nổi) -> chỉ đổi cờ cửa sổ tại chỗ, không dựng lại
+                        else if (builtTapMode != Store.tapMode(this@MacroService)) applyTapModeFlags()
                     }
                     if (Store.tapMode(this@MacroService) == TAP_ADB) AdbClient.tick(applicationContext)
                 }
@@ -425,6 +425,58 @@ class MacroService : AccessibilityService() {
         zombies.clear()
     }
 
+    /** Đổi chế độ chạm: chỉ bật/tắt cờ SPLIT_TOUCH trên các cửa sổ đang có (không gỡ, không dựng lại). */
+    private fun applyTapModeFlags() {
+        val adb = Store.tapMode(this) == TAP_ADB
+        val split = WindowManager.LayoutParams.FLAG_SPLIT_TOUCH
+        for ((v, lp) in live) {
+            lp.flags = if (adb) lp.flags or split else lp.flags and split.inv()
+            try {
+                wm.updateViewLayout(v, lp)
+            } catch (_: Exception) {
+            }
+        }
+        builtTapMode = Store.tapMode(this)
+    }
+
+    /** Gỡ riêng cửa sổ của 1 nút (các cửa sổ khác giữ nguyên). */
+    private fun removeButtonWindow(id: Int) {
+        val v = btnViews.remove(id) ?: return
+        btnLps.remove(id)
+        live.removeAll { it.first === v }
+        try {
+            wm.removeViewImmediate(v)
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Vừa thêm 1 nút: chỉ gắn thêm cửa sổ của nút đó. */
+    private fun addedButton(b: MacroButton) {
+        if (mode == Mode.OFF || !::wm.isInitialized) return
+        val (sw, sh) = screenSize()
+        addButton(b, sw, sh)
+        backdrop?.invalidate()
+        refreshPanel()
+    }
+
+    /** Thay cả bộ nút (tải macro): gắn bộ mới trước, gỡ bộ cũ sau; bong bóng + bảng + nền giữ nguyên. */
+    private fun reloadButtons() {
+        if (mode == Mode.OFF || !::wm.isInitialized) return
+        for (id in btnViews.keys.toList()) {
+            val v = btnViews.remove(id) ?: continue
+            btnLps.remove(id)
+            live.removeAll { it.first === v }
+            zombies.add(v)
+        }
+        val (sw, sh) = screenSize()
+        applyOrientation(sw, sh)
+        for (b in buttons) addButton(b, sw, sh)
+        backdrop?.invalidate()
+        refreshPanel()
+        handler.removeCallbacks(flushZombiesRun)
+        handler.postDelayed(flushZombiesRun, 200)
+    }
+
     private fun rebuildAll() {
         if (!::wm.isInitialized) return
         setPanelFocusable(false)
@@ -451,7 +503,7 @@ class MacroService : AccessibilityService() {
         if (mode == Mode.EDIT) addPanel(sw, sh)
         addBubble(sw, sh)
         handler.removeCallbacks(flushZombiesRun)
-        handler.postDelayed(flushZombiesRun, 140)
+        handler.postDelayed(flushZombiesRun, 200)
     }
 
     private fun addBackdrop() {
@@ -583,6 +635,8 @@ class MacroService : AccessibilityService() {
         if (mode == Mode.RUN) enterEdit() else if (mode == Mode.EDIT) exitEdit()
     }
 
+    // Vào / ra Setup là đổi cấu trúc cửa sổ (thêm / bỏ nền + bảng, đổi nút từ xuyên-chạm sang chạm được, giữ đúng thứ tự
+    // lớp), nên dùng rebuildAll() — bản mới gắn trước, bản cũ gỡ sau nên không bị chớp.
     private fun enterEdit() {
         cancelChain()
         mode = Mode.EDIT
@@ -1067,7 +1121,7 @@ class MacroService : AccessibilityService() {
                         selectedId = -1
                         listOpen = false
                         persist()
-                        rebuildAll()
+                        reloadButtons()
                         toast("Đã tải macro: $n")
                     }
                 }
@@ -1290,7 +1344,7 @@ class MacroService : AccessibilityService() {
         )
         addTargetMain = mainNo
         persist()
-        rebuildAll()
+        addedButton(buttons.last())
     }
 
     private fun addMain() {
@@ -1307,7 +1361,7 @@ class MacroService : AccessibilityService() {
         // không tự nối nút số nào vào main mới; các nút số tạo sau sẽ vào main này
         addTargetMain = n
         persist()
-        rebuildAll()
+        addedButton(buttons.last())
     }
 
     private fun deleteButton(b: MacroButton) {
@@ -1321,14 +1375,22 @@ class MacroService : AccessibilityService() {
         }
         selectedId = -1
         persist()
-        rebuildAll()
+        removeButtonWindow(b.id)
+        for (v in btnViews.values) {
+            v.hilite = false
+            v.invalidate()
+        }
+        backdrop?.invalidate()
+        refreshPanel()
     }
 
     private fun clearAll() {
         buttons.clear()
         selectedId = -1
         persist()
-        rebuildAll()
+        for (id in btnViews.keys.toList()) removeButtonWindow(id)
+        backdrop?.invalidate()
+        refreshPanel()
         toast("Đã xóa hết nút")
     }
 
