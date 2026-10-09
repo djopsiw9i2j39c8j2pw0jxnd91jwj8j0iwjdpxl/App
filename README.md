@@ -29,3 +29,8 @@ Chạm nút ở chế độ setup → ô **Tên nút** (tối đa 16 ký tự). 
 
 ## Xoay màn hình
 Vị trí nút + bong bóng được nhớ RIÊNG cho hướng dọc và hướng ngang. Hướng chưa từng đặt thì tự suy ra theo tỉ lệ từ hướng kia, kéo đi đâu thì nhớ đó; xoay qua lại không còn bị kẹt vị trí của hướng cũ.
+
+## Bản sửa: giao diện nổi không còn bị dựng lại mỗi lần tương tác
+- Giao diện nổi giờ vẽ bằng quyền **Hiển thị trên các ứng dụng khác** (app sẽ hỏi cấp quyền lần đầu bấm BẮT ĐẦU). Trợ năng chỉ còn dùng để chạm. Chưa cấp quyền thì tạm vẽ qua Trợ năng.
+- Thêm / xóa / tải nút, vào / ra setup, đổi chế độ chạm: chỉ cập nhật cửa sổ có sẵn (vẽ lại, hiệu ứng), không gỡ và gắn lại.
+- Chỉ dựng lại toàn bộ khi giao diện bị mất liên tục ~1–2 giây, khi xoay / đổi cỡ màn hình, hoặc khi vừa cấp / thu hồi quyền hiển thị trên app khác.
