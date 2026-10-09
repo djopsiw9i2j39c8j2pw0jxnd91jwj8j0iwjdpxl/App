@@ -38,8 +38,6 @@ class MainActivity : Activity() {
     private lateinit var modeAdb: TextView
     private lateinit var adbBox: LinearLayout
     private lateinit var adbStatus: TextView
-    private lateinit var daemonBtn: TextView
-    private lateinit var daemonNote: TextView
     private val adbListener: () -> Unit = { refreshMode() }
 
     private fun dp(v: Number): Int = (v.toFloat() * resources.displayMetrics.density + 0.5f).toInt()
@@ -193,34 +191,6 @@ class MainActivity : Activity() {
         ar.addView(cb, bl1)
         ar.addView(db, bl2)
         adbBox.addView(ar)
-
-        // chạy nền: chỉ cần Wi-Fi 1 lần để khởi động tiến trình chạm, sau đó tắt Wi-Fi / dùng 4G vẫn chạm được
-        daemonBtn = text("", 13f, Theme.ACCENT, true)
-        daemonBtn.gravity = Gravity.CENTER
-        daemonBtn.isClickable = true
-        pressFx(daemonBtn)
-        daemonBtn.setOnClickListener {
-            Store.setDaemon(this, !Store.daemon(this))
-            refreshMode()
-        }
-        val dbl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40))
-        dbl.topMargin = dp(8)
-        adbBox.addView(daemonBtn, dbl)
-        daemonNote = text("", 11f, Theme.MUTED)
-        daemonNote.setPadding(0, dp(6), 0, 0)
-        adbBox.addView(daemonNote)
-        val ds = text("Dừng hẳn tiến trình nền", 13f, Theme.DANGER, true)
-        ds.gravity = Gravity.CENTER
-        ds.background = roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.DANGER, dp(1))
-        ds.isClickable = true
-        pressFx(ds)
-        ds.setOnClickListener {
-            AdbClient.stopDaemon(applicationContext)
-            Toast.makeText(this, "Đã dừng tiến trình nền", Toast.LENGTH_SHORT).show()
-        }
-        val dsl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38))
-        dsl.topMargin = dp(6)
-        adbBox.addView(ds, dsl)
         val an = text(
             "Cần Android 11+. Ghép cặp (làm 1 lần): vào Tùy chọn nhà phát triển → Gỡ lỗi không dây → " +
                     "\"Ghép nối thiết bị bằng mã\" và để hộp thoại đó MỞ. Chỉ cần nhập MÃ 6 số, app tự tìm cổng. " +
@@ -411,12 +381,6 @@ class MainActivity : Activity() {
         adbBox.visibility = if (adb) View.VISIBLE else View.GONE
         adbStatus.text = AdbClient.statusText()
         adbStatus.setTextColor(AdbClient.statusColor())
-        val dm = Store.daemon(this)
-        style(daemonBtn, dm)
-        daemonBtn.text = if (dm) "Chạy nền (không cần Wi-Fi): BẬT" else "Chạy nền (không cần Wi-Fi): TẮT"
-        daemonNote.text = if (dm)
-            "Cần Wi-Fi 1 lần (sau mỗi lần khởi động lại máy) để khởi động tiến trình chạm. Sau đó tắt Wi-Fi / dùng 4G vẫn chạm được. Áp dụng ở lần Kết nối kế tiếp."
-        else "Tắt: engine chạm gắn vào kết nối ADB, mất Wi-Fi là dừng."
     }
 
     private fun serviceEnabled(): Boolean {

@@ -53,36 +53,6 @@ object Store {
         p(ctx).edit().putInt("tapMode", m).apply()
     }
 
-    /** Chạy engine chạm thành tiến trình NỀN độc lập (chỉ cần Wi-Fi 1 lần để khởi động, sau đó tắt Wi-Fi vẫn chạm được). */
-    fun daemon(ctx: Context): Boolean = p(ctx).getBoolean("daemon", true)
-
-    fun setDaemon(ctx: Context, v: Boolean) {
-        p(ctx).edit().putBoolean("daemon", v).apply()
-    }
-
-    /** Cổng loopback + mã bí mật của tiến trình nền (tạo ngẫu nhiên 1 lần, nhớ lại để nối lại không cần ADB). */
-    fun daemonPort(ctx: Context): Int {
-        val sp = p(ctx)
-        var v = sp.getInt("daemonPort", 0)
-        if (v < 1024) {
-            v = 20000 + java.security.SecureRandom().nextInt(40000)
-            sp.edit().putInt("daemonPort", v).apply()
-        }
-        return v
-    }
-
-    fun daemonToken(ctx: Context): String {
-        val sp = p(ctx)
-        var t = sp.getString("daemonToken", null)
-        if (t == null || t.length < 16) {
-            val b = ByteArray(16)
-            java.security.SecureRandom().nextBytes(b)
-            t = b.joinToString("") { "%02x".format(it) }
-            sp.edit().putString("daemonToken", t).apply()
-        }
-        return t
-    }
-
     /** Tiếp quản ngón thật SỚM (mượt hơn, không khựng giữa chừng). Mặc định bật. */
     fun earlyTake(ctx: Context): Boolean = p(ctx).getBoolean("earlyTake", true)
 

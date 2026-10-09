@@ -1186,27 +1186,6 @@ class MacroService : AccessibilityService() {
         )
         c.addView(btns)
 
-        // chạy nền: chỉ cần Wi-Fi 1 lần để khởi động tiến trình chạm, sau đó tắt Wi-Fi / dùng 4G vẫn chạm được
-        val dlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        dlp.topMargin = dp(6)
-        c.addView(toggleRow("Chạy nền", Store.daemon(this)) {
-            Store.setDaemon(this, it)
-            refreshPanel()
-        }, dlp)
-        val dh = label(
-            if (Store.daemon(this)) "Bật: cần Wi-Fi 1 lần (sau mỗi lần khởi động lại máy) để khởi động tiến trình chạm; sau đó tắt Wi-Fi / dùng 4G vẫn chạm được. Áp dụng ở lần Kết nối kế tiếp."
-            else "Tắt: engine chạm gắn vào kết nối ADB, mất Wi-Fi là dừng.",
-            11f, Theme.MUTED
-        )
-        dh.setPadding(dp(2), dp(4), dp(2), dp(2))
-        c.addView(dh)
-        if (Store.daemon(this)) {
-            val stop = actionBtn("Dừng hẳn tiến trình nền", false, true) { AdbClient.stopDaemon(applicationContext) }
-            val slp2 = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(34))
-            slp2.topMargin = dp(4)
-            c.addView(stop, slp2)
-        }
-
         if (!pairOpen) return
 
         val hint = label(
