@@ -1,0 +1,219 @@
+package com.macrosniper.app
+
+import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
+
+enum class Kind { NUM, MAIN }
+
+/** Cách app tạo cú chạm. */
+const val TAP_ACC = 0 // dịch vụ Trợ năng (dispatchGesture)
+const val TAP_ADB = 1 // Gỡ lỗi không dây (ADB tự nhúng, lệnh input tap)
+
+/** Kiểu kích hoạt của nút main. */
+const val TRIG_PRESS = 0    // chạy 1 lần khi ấn xuống
+const val TRIG_RELEASE = 1  // chạy 1 lần khi thả tay
+const val TRIG_HOLD = 2     // giữ tay: chuỗi lặp đi lặp lại, thả tay là dừng
+
+/**
+ * Một nút trên màn hình.
+ * - NUM : nút macro số 1, 2, 3...  (là vị trí sẽ được "bấm"; số được đánh RIÊNG trong từng main)
+ * - MAIN: nút trung tâm main1, main2... (nút bạn bấm để kích hoạt chuỗi)
+ */
+data class MacroButton(
+    val id: Int,
+    var kind: Kind,
+    var number: Int,       // NUM: thứ tự trong main của nó · MAIN: số của main
+    var x: Int,            // tâm nút (px, toạ độ màn hình)
+    var y: Int,
+    var sizeDp: Int,
+    var alphaPct: Int,     // 0..100 (0 = tàng hình khi chạy; lúc setup luôn hiện tối thiểu 20%)
+    var delayMs: Int,      // chỉ NUM: độ trễ trước khi bấm (tốc độ ấn)
+    var mainNo: Int,       // chỉ NUM: thuộc main số mấy (0 = chưa nối main nào)
+    var trigger: Int,      // chỉ MAIN: TRIG_PRESS / TRIG_RELEASE / TRIG_HOLD
+    var name: String = "",  // tên tuỳ chỉnh hiện trên nút (rỗng = hiện số / mainN mặc định)
+    // Vị trí nhớ RIÊNG cho từng hướng màn hình (-1 = chưa đặt). x,y ở trên là vị trí của hướng đang hiển thị.
+    var pX: Int = -1, var pY: Int = -1,   // hướng dọc
+    var lX: Int = -1, var lY: Int = -1    // hướng ngang
+)
+
+object Store {
+    private fun p(ctx: Context) =
+        ctx.getSharedPreferences("macro_sniper", Context.MODE_PRIVATE)
+
+    fun isRunning(ctx: Context): Boolean = p(ctx).getBoolean("running", false)
+
+    fun setRunning(ctx: Context, v: Boolean) {
+        p(ctx).edit().putBoolean("running", v).apply()
+    }
+
+    fun tapMode(ctx: Context): Int = p(ctx).getInt("tapMode", TAP_ACC)
+
+    fun setTapMode(ctx: Context, m: Int) {
+        p(ctx).edit().putInt("tapMode", m).apply()
+    }
+
+    /** Chạy engine chạm thành tiến trình NỀN độc lập (chỉ cần Wi-Fi 1 lần để khởi động, sau đó tắt Wi-Fi vẫn chạm được). */
+    fun daemon(ctx: Context): Boolean = p(ctx).getBoolean("daemon", true)
+
+    fun setDaemon(ctx: Context, v: Boolean) {
+        p(ctx).edit().putBoolean("daemon", v).apply()
+    }
+
+    /** Cổng loopback + mã bí mật của tiến trình nền (tạo ngẫu nhiên 1 lần, nhớ lại để nối lại không cần ADB). */
+    fun daemonPort(ctx: Context): Int {
+        val sp = p(ctx)
+        var v = sp.getInt("daemonPort", 0)
+        if (v < 1024) {
+            v = 20000 + java.security.SecureRandom().nextInt(40000)
+            sp.edit().putInt("daemonPort", v).apply()
+        }
+        return v
+    }
+
+    fun daemonToken(ctx: Context): String {
+        val sp = p(ctx)
+        var t = sp.getString("daemonToken", null)
+        if (t == null || t.length < 16) {
+            val b = ByteArray(16)
+            java.security.SecureRandom().nextBytes(b)
+            t = b.joinToString("") { "%02x".format(it) }
+            sp.edit().putString("daemonToken", t).apply()
+        }
+        return t
+    }
+
+    /** Tiếp quản ngón thật SỚM (mượt hơn, không khựng giữa chừng). Mặc định bật. */
+    fun earlyTake(ctx: Context): Boolean = p(ctx).getBoolean("earlyTake", true)
+
+    fun setEarlyTake(ctx: Context, v: Boolean) {
+        p(ctx).edit().putBoolean("earlyTake", v).apply()
+    }
+
+    // ---- Tâm ảo (crosshair) + vòng tròn quanh tâm: cài đặt chung, không gắn với từng macro
+    fun crossOn(ctx: Context) = p(ctx).getBoolean("crossOn", false)
+    fun crossSize(ctx: Context) = p(ctx).getInt("crossSize", 28)       // dp, đường kính hình tâm
+    fun crossAlpha(ctx: Context) = p(ctx).getInt("crossAlpha", 90)     // %
+    fun ringOn(ctx: Context) = p(ctx).getBoolean("ringOn", false)
+    fun ringSize(ctx: Context) = p(ctx).getInt("ringSize", 120)        // dp, đường kính vòng tròn
+    fun ringStroke(ctx: Context) = p(ctx).getInt("ringStroke", 2)      // dp, độ dày nét
+    fun ringAlpha(ctx: Context) = p(ctx).getInt("ringAlpha", 70)       // %
+
+    fun setCrossOn(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("crossOn", v).apply()
+    fun setCrossSize(ctx: Context, v: Int) = p(ctx).edit().putInt("crossSize", v).apply()
+    fun setCrossAlpha(ctx: Context, v: Int) = p(ctx).edit().putInt("crossAlpha", v).apply()
+    fun setRingOn(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("ringOn", v).apply()
+    fun setRingSize(ctx: Context, v: Int) = p(ctx).edit().putInt("ringSize", v).apply()
+    fun setRingStroke(ctx: Context, v: Int) = p(ctx).edit().putInt("ringStroke", v).apply()
+    fun setRingAlpha(ctx: Context, v: Int) = p(ctx).edit().putInt("ringAlpha", v).apply()
+
+    /** Vị trí bong bóng, nhớ riêng cho hướng dọc / ngang. */
+    fun bubblePos(ctx: Context, land: Boolean): Pair<Int, Int>? {
+        val s = p(ctx)
+        val kx = if (land) "blx" else "bx"
+        val ky = if (land) "bly" else "by"
+        return if (s.contains(kx)) Pair(s.getInt(kx, 0), s.getInt(ky, 0)) else null
+    }
+
+    fun setBubblePos(ctx: Context, x: Int, y: Int, land: Boolean) {
+        val kx = if (land) "blx" else "bx"
+        val ky = if (land) "bly" else "by"
+        p(ctx).edit().putInt(kx, x).putInt(ky, y).apply()
+    }
+
+    private fun encode(list: List<MacroButton>): JSONArray {
+        val arr = JSONArray()
+        for (b in list) {
+            val o = JSONObject()
+            o.put("id", b.id)
+            o.put("kind", b.kind.name)
+            o.put("number", b.number)
+            o.put("x", b.x)
+            o.put("y", b.y)
+            o.put("size", b.sizeDp)
+            o.put("alpha", b.alphaPct)
+            o.put("delay", b.delayMs)
+            o.put("main", b.mainNo)
+            o.put("trigger", b.trigger)
+            o.put("name", b.name)
+            o.put("pX", b.pX)
+            o.put("pY", b.pY)
+            o.put("lX", b.lX)
+            o.put("lY", b.lY)
+            arr.put(o)
+        }
+        return arr
+    }
+
+    private fun decode(arr: JSONArray): MutableList<MacroButton> {
+        val out = mutableListOf<MacroButton>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val kind = if (o.optString("kind") == "MAIN") Kind.MAIN else Kind.NUM
+            out.add(
+                MacroButton(
+                    id = o.optInt("id", i + 1),
+                    kind = kind,
+                    number = o.optInt("number", i + 1),
+                    x = o.optInt("x", 300),
+                    y = o.optInt("y", 300),
+                    sizeDp = o.optInt("size", if (kind == Kind.MAIN) 72 else 56),
+                    alphaPct = o.optInt("alpha", 85).coerceIn(0, 100),
+                    delayMs = o.optInt("delay", 120),
+                    mainNo = o.optInt("main", 0),
+                    // tương thích dữ liệu cũ (chỉ có onRelease true/false)
+                    trigger = o.optInt("trigger", if (o.optBoolean("onRelease", false)) TRIG_RELEASE else TRIG_PRESS),
+                    name = o.optString("name", ""),
+                    pX = o.optInt("pX", -1),
+                    pY = o.optInt("pY", -1),
+                    lX = o.optInt("lX", -1),
+                    lY = o.optInt("lY", -1)
+                )
+            )
+        }
+        return out
+    }
+
+    fun saveCurrent(ctx: Context, list: List<MacroButton>) {
+        p(ctx).edit().putString("current", encode(list).toString()).apply()
+    }
+
+    fun loadCurrent(ctx: Context): MutableList<MacroButton> {
+        val s = p(ctx).getString("current", null) ?: return mutableListOf()
+        return try {
+            decode(JSONArray(s))
+        } catch (e: Exception) {
+            mutableListOf()
+        }
+    }
+
+    private fun macrosObj(ctx: Context): JSONObject {
+        val s = p(ctx).getString("macros", null) ?: return JSONObject()
+        return try {
+            JSONObject(s)
+        } catch (e: Exception) {
+            JSONObject()
+        }
+    }
+
+    fun macroNames(ctx: Context): List<String> {
+        return macrosObj(ctx).keys().asSequence().toList().sorted()
+    }
+
+    fun saveMacro(ctx: Context, name: String, list: List<MacroButton>) {
+        val o = macrosObj(ctx)
+        o.put(name, encode(list))
+        p(ctx).edit().putString("macros", o.toString()).apply()
+    }
+
+    fun loadMacro(ctx: Context, name: String): MutableList<MacroButton>? {
+        val arr = macrosObj(ctx).optJSONArray(name) ?: return null
+        return decode(arr)
+    }
+
+    fun deleteMacro(ctx: Context, name: String) {
+        val o = macrosObj(ctx)
+        o.remove(name)
+        p(ctx).edit().putString("macros", o.toString()).apply()
+    }
+}
