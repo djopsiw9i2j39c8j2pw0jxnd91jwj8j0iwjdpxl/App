@@ -117,7 +117,9 @@ object AdbClient {
     fun statusText(): String = when {
         !supported() -> "Cần Android 11 trở lên để dùng Gỡ lỗi WiFi"
         state == State.CONNECTED -> {
-            val err = if (grabNote.isNotEmpty()) grabNote else if (ghostNote.startsWith("đang")) "" else ghostNote // "đang khởi tạo…" không phải lỗi
+            // "đã nhả" (nhả cảm ứng lúc rảnh) và "đang ..." (đang chờ / khởi tạo) là trạng thái bình thường, không phải lỗi
+            fun real(n: String) = n.isNotEmpty() && !n.startsWith("đã nhả") && !n.startsWith("đang")
+            val err = if (real(grabNote)) grabNote else if (real(ghostNote)) ghostNote else ""
             "●  Đã kết nối" + (if (err.isNotEmpty()) " · Lỗi: $err" else "")
         }
         state == State.CONNECTING -> "…  Đang kết nối"
