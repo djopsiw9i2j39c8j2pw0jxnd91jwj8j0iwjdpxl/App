@@ -1770,7 +1770,7 @@ class MacroService : AccessibilityService() {
         })
 
         if (b.kind == Kind.NUM) {
-            c.addView(sliderRow("Tốc độ ấn", 30, 1000, b.delayMs, { "${it}ms" }) { v, done ->
+            c.addView(sliderRow("Tốc độ ấn", 1, 1000, b.delayMs, { "${it}ms" }) { v, done ->
                 b.delayMs = v
                 if (done) persist()
             })
@@ -2090,7 +2090,7 @@ class MacroService : AccessibilityService() {
             stepChain(gen, ids, i + 1)
             return
         }
-        val wait = maxOf(b.delayMs, 30).toLong()
+        val wait = maxOf(b.delayMs, 1).toLong()
         handler.postAtTime({
             if (gen == chainGen) {
                 tapButton(b.id) { stepChain(gen, ids, i + 1) }
