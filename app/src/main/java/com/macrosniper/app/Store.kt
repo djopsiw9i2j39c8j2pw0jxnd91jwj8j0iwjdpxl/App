@@ -4,7 +4,7 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
-enum class Kind { NUM, MAIN, SWIPE }
+enum class Kind { NUM, MAIN }
 
 /** Cách app tạo cú chạm. */
 const val TAP_ACC = 0 // dịch vụ Trợ năng (dispatchGesture)
@@ -19,7 +19,6 @@ const val TRIG_HOLD = 2     // giữ tay: chuỗi lặp đi lặp lại, thả t
  * Một nút trên màn hình.
  * - NUM : nút macro số 1, 2, 3...  (là vị trí sẽ được "bấm"; số được đánh RIÊNG trong từng main)
  * - MAIN: nút trung tâm main1, main2... (nút bạn bấm để kích hoạt chuỗi)
- * - SWIPE: nút macro kéo / vuốt tâm: bấm là vuốt 1 đường thẳng (hướng + độ nhạy chỉnh được) bắt đầu từ tâm màn hình
  */
 data class MacroButton(
     val id: Int,
@@ -34,19 +33,10 @@ data class MacroButton(
     var trigger: Int,      // chỉ MAIN: TRIG_PRESS / TRIG_RELEASE / TRIG_HOLD
     var passThru: Boolean = false, // chỉ MAIN: cho cảm ứng xuyên xuống game (cần chế độ Gỡ lỗi WiFi để vẫn kích hoạt được)
     var name: String = "",  // tên tuỳ chỉnh hiện trên nút (rỗng = hiện số / mainN mặc định)
-    // ---- chỉ SWIPE (nút macro kéo / vuốt tâm)
-    var angle: Int = 180,      // hướng vuốt, độ, 0 = lên, 90 = phải, 180 = xuống, 270 = trái
-    var dist: Int = 160,       // độ nhạy = quãng vuốt (dp)
-    var swipeMs: Int = 120,    // thời gian 1 lần vuốt (ms) — càng nhỏ càng nhanh
-    var startMode: Int = 0,    // 0 = vuốt từ tâm màn hình (tâm ảo), 1 = vuốt từ chính vị trí nút
-    var jitter: Int = 0,       // 0..30 (%): lệch ngẫu nhiên nhẹ quãng + hướng cho tự nhiên
     // Vị trí nhớ RIÊNG cho từng hướng màn hình (-1 = chưa đặt). x,y ở trên là vị trí của hướng đang hiển thị.
     var pX: Int = -1, var pY: Int = -1,   // hướng dọc
     var lX: Int = -1, var lY: Int = -1    // hướng ngang
 )
-
-/** Nút "kích hoạt" (bấm vào để chạy gì đó): main hoặc nút vuốt. */
-val MacroButton.isTrigger: Boolean get() = kind == Kind.MAIN || kind == Kind.SWIPE
 
 object Store {
     private fun p(ctx: Context) =
@@ -118,11 +108,6 @@ object Store {
             o.put("trigger", b.trigger)
             o.put("name", b.name)
             o.put("pass", b.passThru)
-            o.put("angle", b.angle)
-            o.put("dist", b.dist)
-            o.put("swipeMs", b.swipeMs)
-            o.put("startMode", b.startMode)
-            o.put("jitter", b.jitter)
             o.put("pX", b.pX)
             o.put("pY", b.pY)
             o.put("lX", b.lX)
@@ -136,11 +121,7 @@ object Store {
         val out = mutableListOf<MacroButton>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
-            val kind = when (o.optString("kind")) {
-                "MAIN" -> Kind.MAIN
-                "SWIPE" -> Kind.SWIPE
-                else -> Kind.NUM
-            }
+            val kind = if (o.optString("kind") == "MAIN") Kind.MAIN else Kind.NUM
             out.add(
                 MacroButton(
                     id = o.optInt("id", i + 1),
@@ -148,7 +129,7 @@ object Store {
                     number = o.optInt("number", i + 1),
                     x = o.optInt("x", 300),
                     y = o.optInt("y", 300),
-                    sizeDp = o.optInt("size", if (kind == Kind.MAIN) 72 else if (kind == Kind.SWIPE) 68 else 56),
+                    sizeDp = o.optInt("size", if (kind == Kind.MAIN) 72 else 56),
                     alphaPct = o.optInt("alpha", 85).coerceIn(0, 100),
                     delayMs = o.optInt("delay", 120),
                     mainNo = o.optInt("main", 0),
@@ -156,11 +137,6 @@ object Store {
                     trigger = o.optInt("trigger", if (o.optBoolean("onRelease", false)) TRIG_RELEASE else TRIG_PRESS),
                     name = o.optString("name", ""),
                     passThru = o.optBoolean("pass", false),
-                    angle = o.optInt("angle", 180).coerceIn(0, 359),
-                    dist = o.optInt("dist", 160).coerceIn(10, 800),
-                    swipeMs = o.optInt("swipeMs", 120).coerceIn(16, 1500),
-                    startMode = o.optInt("startMode", 0),
-                    jitter = o.optInt("jitter", 0).coerceIn(0, 30),
                     pX = o.optInt("pX", -1),
                     pY = o.optInt("pY", -1),
                     lX = o.optInt("lX", -1),

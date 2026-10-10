@@ -27,7 +27,6 @@ object Theme {
     val PANEL = Color.parseColor("#F2101510")
     val FIELD = Color.parseColor("#1C241B")
     val STROKE = Color.parseColor("#3C7A24")
-    val ORANGE = Color.parseColor("#FFB13F")
 }
 
 fun roundedBg(fill: Int, radiusPx: Float, strokeColor: Int = 0, strokePx: Int = 0): GradientDrawable {
@@ -80,13 +79,8 @@ class BtnView(ctx: Context, val m: MacroButton) : View(ctx) {
         val cx = w / 2f
         val cy = h / 2f
         val r = minOf(w, h) / 2f
-        val isSwipe = m.kind == Kind.SWIPE
-        val isMain = m.kind == Kind.MAIN || isSwipe // cùng cỡ chữ / cách xếp nhãn như main
-        val col = when {
-            isSwipe -> Theme.ORANGE
-            isMain -> Theme.LIME
-            else -> Theme.ACCENT
-        }
+        val isMain = m.kind == Kind.MAIN
+        val col = if (isMain) Theme.LIME else Theme.ACCENT
 
         // quầng sáng ngoài
         p.shader = null
@@ -117,7 +111,6 @@ class BtnView(ctx: Context, val m: MacroButton) : View(ctx) {
         val custom = m.name.trim()
         val label = when {
             custom.isNotEmpty() -> custom
-            isSwipe -> "kéo${m.number}"
             isMain -> "main${m.number}"
             else -> m.number.toString()
         }
@@ -128,7 +121,6 @@ class BtnView(ctx: Context, val m: MacroButton) : View(ctx) {
             label.length == 2 -> br * 0.9f
             else -> br * 1.05f
         }
-        if (isSwipe) drawDir(c, cx, cy, br, col)
         val tag = showTag && !isMain && m.mainNo > 0
         val tagText = if (custom.isNotEmpty()) "${m.number}·m${m.mainNo}" else "m${m.mainNo}"
         tp.color = col
@@ -151,71 +143,6 @@ class BtnView(ctx: Context, val m: MacroButton) : View(ctx) {
             val f2 = tp.fontMetrics
             c.drawText(tagText, cx, cy + br * 0.62f - (f2.ascent + f2.descent) / 2f, tp)
         }
-    }
-
-    // ---- nút vuốt: núm nhỏ chỉnh hướng nằm ngay trên viền nút (kéo núm quanh nút để xoay hướng vuốt)
-    private val dirP = Paint(Paint.ANTI_ALIAS_FLAG)
-
-    private fun dirUnit(): Pair<Float, Float> {
-        val a = Math.toRadians(m.angle.toDouble())
-        return Pair(Math.sin(a).toFloat(), (-Math.cos(a)).toFloat()) // 0° = lên, quay theo chiều kim đồng hồ
-    }
-
-    private fun knobRadius(br: Float): Float = maxOf(br * 0.2f, 7f * resources.displayMetrics.density)
-
-    /** Toạ độ tâm núm hướng (trong hệ toạ độ của view). */
-    fun knobCenter(): Pair<Float, Float> {
-        val br = minOf(width, height) / 2f * 0.84f
-        val (ux, uy) = dirUnit()
-        return Pair(width / 2f + ux * br * 0.7f, height / 2f + uy * br * 0.7f)
-    }
-
-    /** (x, y) trong view có trúng núm hướng không (vùng chạm rộng hơn hình vẽ cho dễ bấm). */
-    fun hitKnob(x: Float, y: Float): Boolean {
-        val br = minOf(width, height) / 2f * 0.84f
-        val (kx, ky) = knobCenter()
-        val d = resources.displayMetrics.density
-        return hypot(x - kx, y - ky) <= maxOf(knobRadius(br) * 1.9f, 16f * d)
-    }
-
-    private fun drawDir(c: Canvas, cx: Float, cy: Float, br: Float, col: Int) {
-        val (ux, uy) = dirUnit()
-        val d = resources.displayMetrics.density
-        val kr = knobRadius(br)
-        val kx = cx + ux * br * 0.7f
-        val ky = cy + uy * br * 0.7f
-        if (showTag) {
-            // setup: núm tròn có viền trắng + vạch nối về tâm
-            dirP.shader = null
-            dirP.style = Paint.Style.STROKE
-            dirP.strokeWidth = maxOf(1.5f * d, br * 0.04f)
-            dirP.color = col
-            dirP.alpha = 140
-            c.drawLine(cx + ux * br * 0.3f, cy + uy * br * 0.3f, kx, ky, dirP)
-            dirP.style = Paint.Style.FILL
-            dirP.color = col
-            dirP.alpha = 255
-            c.drawCircle(kx, ky, kr, dirP)
-            dirP.style = Paint.Style.STROKE
-            dirP.strokeWidth = maxOf(1.5f * d, kr * 0.22f)
-            dirP.color = Color.WHITE
-            c.drawCircle(kx, ky, kr, dirP)
-        }
-        // mũi tên nhỏ chỉ hướng vuốt (cả lúc chạy lẫn lúc setup)
-        val px = -uy
-        val py = ux
-        val s = br * 0.16f
-        val tipX = cx + ux * br * (if (showTag) 0.98f else 0.86f)
-        val tipY = cy + uy * br * (if (showTag) 0.98f else 0.86f)
-        val path = android.graphics.Path()
-        path.moveTo(tipX, tipY)
-        path.lineTo(tipX - ux * s * 1.5f + px * s, tipY - uy * s * 1.5f + py * s)
-        path.lineTo(tipX - ux * s * 1.5f - px * s, tipY - uy * s * 1.5f - py * s)
-        path.close()
-        dirP.style = Paint.Style.FILL
-        dirP.color = col
-        dirP.alpha = 255
-        c.drawPath(path, dirP)
     }
 
     /**

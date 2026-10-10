@@ -255,11 +255,9 @@ public final class GhostTouch implements Toucher {
                         edge = true;
                     } else if (code == ABS_MT_POSITION_X) {
                         rx[cur] = value;
-                        if (!hx[cur] && act[cur]) edge = true; // toạ độ đến trễ hơn tracking id -> vẫn phải báo ngón này
                         hx[cur] = true;
                     } else if (code == ABS_MT_POSITION_Y) {
                         ry[cur] = value;
-                        if (!hy[cur] && act[cur]) edge = true;
                         hy[cur] = true;
                     }
                 }
@@ -848,70 +846,6 @@ public final class GhostTouch implements Toucher {
                 }
             }
         }
-    
-
-        @Override
-        public void swipe(int x1, int y1, int x2, int y2, int rot, int w, int h, int durMs) throws Exception {
-            synchronized (lock) {
-                this.rot = rot;
-                this.w = Math.max(1, w);
-                this.h = Math.max(1, h);
-                try {
-                    if (!started) {
-                        started = true;
-                        addAllReal();
-                    }
-                    int gi = indexOfKey(GHOST);
-                    if (gi >= 0) removeAt(gi);
-                    addPointer(GHOST, x1, y1);
-                } catch (Throwable t) {
-                    onInjectFailLocked(t);
-                    throw new Exception(t);
-                }
-            }
-            Thread.sleep(SETTLE_MS);
-            int dur = Math.max(16, durMs);
-            int steps = Math.max(2, Math.min(60, dur / 8));
-            long t0 = System.nanoTime();
-            try {
-                for (int i = 1; i <= steps; i++) {
-                    long target = t0 + (long) dur * 1000000L * i / steps;
-                    long waitMs = (target - System.nanoTime()) / 1000000L;
-                    if (waitMs > 0) Thread.sleep(waitMs);
-                    synchronized (lock) {
-                        int gi = indexOfKey(GHOST);
-                        if (gi < 0) break;
-                        xs[gi] = x1 + (x2 - x1) * (float) i / steps;
-                        ys[gi] = y1 + (y2 - y1) * (float) i / steps;
-                        // ngón thật cũng được cập nhật cùng lượt để không bị "đứng hình"
-                        for (int k = 0; k < n; k++) {
-                            int key = keys[k];
-                            if (key == GHOST) continue;
-                            xs[k] = screen(key, true);
-                            ys[k] = screen(key, false);
-                        }
-                        try {
-                            emit(A_MOVE);
-                        } catch (Throwable t) {
-                            onInjectFailLocked(t);
-                            throw new Exception(t);
-                        }
-                    }
-                }
-            } finally {
-                synchronized (lock) {
-                    try {
-                        int gi = indexOfKey(GHOST);
-                        if (gi >= 0) removeAt(gi);
-                        if (n == 0) started = false;
-                        else syncLocked();
-                    } catch (Throwable t) {
-                        onInjectFailLocked(t);
-                    }
-                }
-            }
-            Thread.sleep(SETTLE_MS); // ngón phụ nhấc hẳn rồi mới báo xong
-        }
     }
 
     // ------------------------------------------------------------------ ioctl EVIOCGRAB (giành độc quyền cảm ứng)
@@ -1052,65 +986,6 @@ public final class GhostTouch implements Toucher {
         out.flush();
     }
 
-    @Override
-    public void swipe(int x1, int y1, int x2, int y2, int rot, int w, int h, int durMs) throws Exception {
-        int[] a = mapToRaw(dev, x1, y1, rot, w, h);
-        int[] b = mapToRaw(dev, x2, y2, rot, w, h);
-        int tid = nextTid();
-        boolean trk = tracker.ok;
-        int restore = tracker.lastRealSlot;
-
-        Frame d = new Frame(is64);
-        d.add(EV_ABS, ABS_MT_SLOT, ghostSlot);
-        d.add(EV_ABS, ABS_MT_TRACKING_ID, tid);
-        if (dev.btnTouch) d.add(EV_KEY, BTN_TOUCH, 1);
-        if (dev.toolFinger) d.add(EV_KEY, BTN_TOOL_FINGER, 1);
-        d.add(EV_ABS, ABS_MT_POSITION_X, a[0]);
-        d.add(EV_ABS, ABS_MT_POSITION_Y, a[1]);
-        if (dev.pressure != null) d.add(EV_ABS, ABS_MT_PRESSURE, mid(dev.pressure, 3));
-        if (dev.major != null) d.add(EV_ABS, ABS_MT_TOUCH_MAJOR, mid(dev.major, 10));
-        if (dev.width != null) d.add(EV_ABS, ABS_MT_WIDTH_MAJOR, mid(dev.width, 10));
-        d.add(EV_ABS, ABS_MT_SLOT, restore);
-        d.add(EV_SYN, SYN_REPORT, 0);
-        out.write(d.bytes());
-        out.flush();
-        Thread.sleep(SETTLE_MS); // cho game kịp nhận "ngón xuống" trước khi trượt
-
-        int dur = Math.max(16, durMs);
-        int steps = Math.max(2, Math.min(60, dur / 8));
-        long t0 = System.nanoTime();
-        for (int i = 1; i <= steps; i++) {
-            long target = t0 + (long) dur * 1000000L * i / steps;
-            long waitMs = (target - System.nanoTime()) / 1000000L;
-            if (waitMs > 0) Thread.sleep(waitMs);
-            int px = a[0] + Math.round((b[0] - a[0]) * (float) i / steps);
-            int py = a[1] + Math.round((b[1] - a[1]) * (float) i / steps);
-            Frame m = new Frame(is64);
-            m.add(EV_ABS, ABS_MT_SLOT, ghostSlot);
-            m.add(EV_ABS, ABS_MT_POSITION_X, px);
-            m.add(EV_ABS, ABS_MT_POSITION_Y, py);
-            m.add(EV_ABS, ABS_MT_SLOT, restore);
-            m.add(EV_SYN, SYN_REPORT, 0);
-            out.write(m.bytes());
-            out.flush();
-        }
-
-        Frame u = new Frame(is64);
-        u.add(EV_ABS, ABS_MT_SLOT, ghostSlot);
-        u.add(EV_ABS, ABS_MT_TRACKING_ID, -1);
-        if (trk && tracker.realActive() == 0) {
-            if (dev.btnTouch) u.add(EV_KEY, BTN_TOUCH, 0);
-            if (dev.toolFinger) u.add(EV_KEY, BTN_TOOL_FINGER, 0);
-        }
-        u.add(EV_ABS, ABS_MT_SLOT, tracker.lastRealSlot);
-        u.add(EV_SYN, SYN_REPORT, 0);
-        out.write(u.bytes());
-        out.flush();
-        Thread.sleep(SETTLE_MS); // ngón phụ đã nhấc hẳn rồi mới báo xong -> cú vuốt lặp sau là cú mới thật sự
-    }
-
-    static final int SETTLE_MS = 12;
-
     // ------------------------------------------------------------------ main
 
     public static void main(String[] args) {
@@ -1180,28 +1055,6 @@ public final class GhostTouch implements Toucher {
                         g.config(p[1].equals("1"), Integer.parseInt(p[2]), Integer.parseInt(p[3]), Integer.parseInt(p[4]));
                     } catch (Throwable ignored) {
                     }
-                } else if (p[0].equals("W") && p.length >= 10) {
-                    // W id x1 y1 x2 y2 rot w h durMs
-                    final String wid = p[1];
-                    final int[] a = new int[8];
-                    boolean okNum = true;
-                    for (int i = 0; i < 8; i++) {
-                        try {
-                            a[i] = Integer.parseInt(p[2 + i]);
-                        } catch (Throwable t) {
-                            okNum = false;
-                        }
-                    }
-                    if (!okNum) {
-                        so.println("E " + wid + " tham số vuốt sai");
-                    } else {
-                        try {
-                            g.swipe(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
-                            so.println("D " + wid);
-                        } catch (Throwable t) {
-                            so.println("E " + wid + " " + t);
-                        }
-                    }
                 } else if (p[0].equals("T") && p.length >= 8) {
                     String id = p[1];
                     try {
@@ -1222,9 +1075,6 @@ public final class GhostTouch implements Toucher {
 /** Một "bộ chạm": ghi thẳng /dev/input (GhostTouch) hoặc tiếp quản ngón thật (GhostTouch.Takeover). */
 interface Toucher {
     void tap(int x, int y, int rot, int w, int h, int holdMs) throws Exception;
-
-    /** Vuốt thẳng từ (x1,y1) tới (x2,y2) trong [durMs] ms (toạ độ màn hình đang hiển thị). */
-    void swipe(int x1, int y1, int x2, int y2, int rot, int w, int h, int durMs) throws Exception;
 
     /** Cấu hình từ app: [early] = tiếp quản sớm; [rot]/[w]/[h] = hướng + kích thước màn hình hiện tại. */
     void config(boolean early, int rot, int w, int h);
