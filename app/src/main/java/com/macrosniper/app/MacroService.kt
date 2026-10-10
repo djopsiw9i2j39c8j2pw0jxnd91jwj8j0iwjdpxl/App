@@ -2206,7 +2206,7 @@ class MacroService : AccessibilityService() {
                 if (repeat && mode == Mode.RUN) {
                     handler.postAtTime({
                         stepSwipe(id, gen, true)
-                    }, swipeToken, SystemClock.uptimeMillis() + maxOf(b.delayMs, 5))
+                    }, swipeToken, SystemClock.uptimeMillis() + maxOf(b.delayMs, 20))
                 } else {
                     swipeActive.remove(id)
                 }

@@ -869,6 +869,7 @@ public final class GhostTouch implements Toucher {
                     throw new Exception(t);
                 }
             }
+            Thread.sleep(SETTLE_MS);
             int dur = Math.max(16, durMs);
             int steps = Math.max(2, Math.min(60, dur / 8));
             long t0 = System.nanoTime();
@@ -909,6 +910,7 @@ public final class GhostTouch implements Toucher {
                     }
                 }
             }
+            Thread.sleep(SETTLE_MS); // ngón phụ nhấc hẳn rồi mới báo xong
         }
     }
 
@@ -1072,6 +1074,7 @@ public final class GhostTouch implements Toucher {
         d.add(EV_SYN, SYN_REPORT, 0);
         out.write(d.bytes());
         out.flush();
+        Thread.sleep(SETTLE_MS); // cho game kịp nhận "ngón xuống" trước khi trượt
 
         int dur = Math.max(16, durMs);
         int steps = Math.max(2, Math.min(60, dur / 8));
@@ -1103,7 +1106,10 @@ public final class GhostTouch implements Toucher {
         u.add(EV_SYN, SYN_REPORT, 0);
         out.write(u.bytes());
         out.flush();
+        Thread.sleep(SETTLE_MS); // ngón phụ đã nhấc hẳn rồi mới báo xong -> cú vuốt lặp sau là cú mới thật sự
     }
+
+    static final int SETTLE_MS = 12;
 
     // ------------------------------------------------------------------ main
 
