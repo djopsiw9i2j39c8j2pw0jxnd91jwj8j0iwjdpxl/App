@@ -185,6 +185,64 @@ class BtnView(ctx: Context, val m: MacroButton) : View(ctx) {
     }
 }
 
+/** Công tắc gạt gọn (thay cho cặp nút Bật / Tắt). Bấm để đổi trạng thái. */
+class ToggleSwitch(ctx: Context) : View(ctx) {
+    var checked: Boolean = false
+        set(v) {
+            field = v
+            pos = if (v) 1f else 0f
+            invalidate()
+        }
+    var onToggle: ((Boolean) -> Unit)? = null
+    private var pos = 0f
+    private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    init {
+        isClickable = true
+        setOnClickListener {
+            val nv = !checked
+            animateTo(nv)
+            onToggle?.invoke(nv)
+        }
+    }
+
+    private fun animateTo(on: Boolean) {
+        val start = pos
+        val target = if (on) 1f else 0f
+        checked = on // đặt trạng thái thật ngay; thumb trượt mượt từ vị trí cũ
+        pos = start
+        val t0 = android.os.SystemClock.uptimeMillis()
+        val step = object : Runnable {
+            override fun run() {
+                val f = ((android.os.SystemClock.uptimeMillis() - t0) / 120f).coerceIn(0f, 1f)
+                pos = start + (target - start) * f
+                invalidate()
+                if (f < 1f) postOnAnimation(this)
+            }
+        }
+        postOnAnimation(step)
+    }
+
+    override fun onDraw(c: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        val r = h / 2f
+        p.style = Paint.Style.FILL
+        p.color = if (checked) Theme.ACCENT2 else Theme.FIELD
+        p.alpha = 255
+        c.drawRoundRect(0f, 0f, w, h, r, r, p)
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = 1.5f * resources.displayMetrics.density
+        p.color = if (checked) Theme.ACCENT else Theme.STROKE
+        c.drawRoundRect(p.strokeWidth / 2, p.strokeWidth / 2, w - p.strokeWidth / 2, h - p.strokeWidth / 2, r, r, p)
+        val tr = r * 0.68f
+        val cx = r + (w - 2 * r) * pos
+        p.style = Paint.Style.FILL
+        p.color = if (checked) Color.parseColor("#0B120A") else Theme.MUTED
+        c.drawCircle(cx, h / 2f, tr, p)
+    }
+}
+
 /** Bong bóng logo có thể kéo thả. */
 class BubbleView(ctx: Context, private val logo: Bitmap?) : View(ctx) {
     var editing: Boolean = false

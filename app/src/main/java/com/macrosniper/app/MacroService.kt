@@ -530,6 +530,7 @@ class MacroService : AccessibilityService() {
         if (newMain > 0) addTargetMain = newMain
         persist()
         for (v in btnViews.values) v.invalidate()
+        applyFocus()
         backdrop?.invalidate()
     }
 
@@ -668,9 +669,14 @@ class MacroService : AccessibilityService() {
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL
-        row.addView(label(name, 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
-        row.addView(actionBtn("Bật", on, false) { onChange(true) }, weighted(dp(34), 0, dp(4)))
-        row.addView(actionBtn("Tắt", !on, false) { onChange(false) }, weighted(dp(34), dp(4), 0))
+        row.addView(label(name, 12f, Theme.MUTED), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val sw = ToggleSwitch(this)
+        sw.checked = on
+        sw.onToggle = {
+            setPanelFocusable(false)
+            onChange(it)
+        }
+        row.addView(sw, LinearLayout.LayoutParams(dp(46), dp(26)))
         return row
     }
 
@@ -884,13 +890,45 @@ class MacroService : AccessibilityService() {
         }
     }
 
+    // ---- chế độ "tập trung": đang chỉnh / kéo nút của main nào thì ẩn các NÚT SỐ của main khác (nút main thì vẫn hiện)
+    private var dragId = -1
+
+    private fun focusMain(): Int {
+        if (mode != Mode.EDIT) return -1
+        val id = if (dragId != -1) dragId else selectedId
+        val b = buttons.firstOrNull { it.id == id } ?: return -1
+        val m = if (b.kind == Kind.MAIN) b.number else b.mainNo
+        return if (m > 0) m else -1
+    }
+
+    private fun hiddenByFocus(b: MacroButton, f: Int = focusMain()): Boolean =
+        f > 0 && b.kind == Kind.NUM && b.mainNo > 0 && b.mainNo != f
+
+    /** Cập nhật ẩn / hiện các nút theo nút đang tương tác. Ra khỏi chỉnh sửa -> hiện lại tất cả. */
+    private fun applyFocus() {
+        val f = focusMain()
+        for (b in buttons) {
+            val v = btnViews[b.id] ?: continue
+            val lp = btnLps[b.id] ?: continue
+            val hide = hiddenByFocus(b, f)
+            val wantVis = if (hide) View.GONE else View.VISIBLE
+            if (v.visibility == wantVis) continue
+            v.visibility = wantVis
+            applyTouchable(lp, !hide && (mode == Mode.EDIT || (b.kind == Kind.MAIN && !isPass(b))))
+            updateWin(v, lp)
+        }
+        backdrop?.invalidate()
+    }
+
     /** Gán lại cảm ứng / độ trong / nhãn cho một nút theo chế độ hiện tại (RUN hoặc EDIT). */
     private fun configureButton(b: MacroButton, v: BtnView, lp: WindowManager.LayoutParams, update: Boolean) {
         val editing = mode == Mode.EDIT
         val wantType = buttonType(b)
         val typeChanged = lp.type != wantType
         lp.type = wantType
-        applyTouchable(lp, editing || (b.kind == Kind.MAIN && !isPass(b)))
+        val hide = hiddenByFocus(b)
+        applyTouchable(lp, !hide && (editing || (b.kind == Kind.MAIN && !isPass(b))))
+        v.visibility = if (hide) View.GONE else View.VISIBLE
         v.alpha = viewAlpha(b)
         v.showTag = editing
         v.hilite = editing && b.id == selectedId
@@ -910,10 +948,18 @@ class MacroService : AccessibilityService() {
                     onMove = {
                         b.x = lp.x + lp.width / 2
                         b.y = lp.y + lp.height / 2
+                        if (dragId != b.id) {
+                            dragId = b.id
+                            applyFocus()
+                        }
                         backdrop?.invalidate()
                     },
                     onTap = { selectButton(b.id) },
-                    onDragEnd = { persist() }
+                    onDragEnd = {
+                        dragId = -1
+                        persist()
+                        applyFocus()
+                    }
                 )
             )
         } else if (b.kind == Kind.MAIN) {
@@ -996,6 +1042,7 @@ class MacroService : AccessibilityService() {
         setPanelFocusable(false)
         mode = Mode.RUN
         selectedId = -1
+        dragId = -1
         listOpen = false
         persist()
         applyModeUi()
@@ -1019,7 +1066,9 @@ class MacroService : AccessibilityService() {
             c.drawColor(Color.parseColor("#55000000"))
             line.strokeWidth = 3f * density
             line.pathEffect = DashPathEffect(floatArrayOf(14f * density, 10f * density), 0f)
+            val f = focusMain()
             for (m in buttons.filter { it.kind == Kind.MAIN }) {
+                if (f > 0 && m.number != f) continue // đang tập trung 1 main: ẩn luôn đường nối của main khác
                 val seq = buttons
                     .filter { it.kind == Kind.NUM && it.mainNo == m.number }
                     .sortedBy { it.number }
@@ -1702,12 +1751,14 @@ class MacroService : AccessibilityService() {
             if (m > 0) addTargetMain = m
         }
         for ((bid, v) in btnViews) v.hilite = (bid == id)
+        applyFocus()
         refreshPanel()
     }
 
     private fun deselect() {
         selectedId = -1
         for (v in btnViews.values) v.hilite = false
+        applyFocus()
         refreshPanel()
     }
 
