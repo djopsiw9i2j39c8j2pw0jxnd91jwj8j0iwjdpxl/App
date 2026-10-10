@@ -113,16 +113,15 @@ object AdbClient {
     fun supported(): Boolean = Build.VERSION.SDK_INT >= 30
     fun isConnected(): Boolean = state == State.CONNECTED
 
+    /** Chỉ hiện "Đã kết nối"; có lỗi thì thêm " · Lỗi: ..." (không có lỗi thì không hiện gì thêm). */
     fun statusText(): String = when {
         !supported() -> "Cần Android 11 trở lên để dùng Gỡ lỗi WiFi"
-        state == State.CONNECTED && ghostReady && takeover && grabbed -> "●  Đã kết nối · chạm hợp nhất (1 luồng, không mất ngón thật)"
-        state == State.CONNECTED && ghostReady && takeover -> "●  Đã kết nối · tiếp quản ngón thật" +
-                (if (grabNote.isNotEmpty()) " · chưa giành được cảm ứng: $grabNote" else if (armOn) " · đang chờ giành cảm ứng" else "")
-        state == State.CONNECTED && ghostReady -> "●  Đã kết nối · ngón tay phụ (không chặn ngón thật)"
-        state == State.CONNECTED -> "●  Đã kết nối · chạm bằng input tap" +
-                (if (ghostNote.isNotEmpty()) " · $ghostNote" else "")
+        state == State.CONNECTED -> {
+            val err = if (grabNote.isNotEmpty()) grabNote else if (ghostNote.startsWith("đang")) "" else ghostNote // "đang khởi tạo…" không phải lỗi
+            "●  Đã kết nối" + (if (err.isNotEmpty()) " · Lỗi: $err" else "")
+        }
         state == State.CONNECTING -> "…  Đang kết nối"
-        else -> "○  Chưa kết nối" + (if (lastError.isNotEmpty()) " · $lastError" else "")
+        else -> "○  Chưa kết nối" + (if (lastError.isNotEmpty()) " · Lỗi: $lastError" else "")
     }
 
     fun statusColor(): Int = when {
@@ -320,7 +319,7 @@ object AdbClient {
             try {
                 val m = manager(app)
                 val f = discover(app, "_adb-tls-connect._tcp", 8000L)
-                    ?: throw IllegalStateException("không thấy dịch vụ Gỡ lỗi không dây (đã bật chưa? có Wi-Fi chưa?)")
+                    ?: throw IllegalStateException("không thể dùng gỡ lỗi do chưa có Wi-Fi")
                 m.connect("127.0.0.1", f.port)
                 if (!wantUp) { // trong lúc nối, người dùng đã đổi sang Trợ năng / bấm Ngắt
                     closeQuietly()
@@ -427,7 +426,7 @@ object AdbClient {
         val n = t.javaClass.simpleName
         return when {
             n.contains("Pairing", true) -> "chưa ghép cặp"
-            t.message.isNullOrBlank() -> "không thấy dịch vụ Gỡ lỗi không dây (đã bật chưa? có Wi-Fi chưa?)"
+            t.message.isNullOrBlank() -> "không thấy dịch vụ Gỡ lỗi do không có Wi-Fi"
             else -> t.message!!.take(60)
         }
     }
