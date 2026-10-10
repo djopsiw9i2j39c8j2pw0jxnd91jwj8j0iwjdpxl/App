@@ -600,13 +600,7 @@ class MacroService : AccessibilityService() {
             val lp = btnLps[b.id] ?: continue
             configureButton(b, v, lp, update = true)
         }
-        val cv = crossView
-        val cl = crossLp
-        if (cv != null && cl != null && cl.type != passType()) {
-            cl.type = passType()
-            applyTouchable(cl, false)
-            retypeWindow(cv, cl)
-        }
+        // tâm / vòng luôn dùng cửa sổ "vẽ trên app khác" (builtType), không đổi sang Trợ năng khi chạy
         if (retyped) {
             // cửa sổ vừa gắn lại nằm đè lên bảng / bong bóng -> đưa 2 thứ này lên trên lại
             retyped = false
@@ -630,13 +624,16 @@ class MacroService : AccessibilityService() {
     }
 
     private fun styleCross(v: CrosshairView) {
+        // Android 12+: cửa sổ nổi không nhận chạm phải có độ mờ cửa sổ 0.8 để cú chạm đi xuyên -> bù lại độ mờ khi vẽ
+        // để độ mờ hiển thị vẫn đúng như thanh trượt
+        val comp = if (Build.VERSION.SDK_INT >= 31 && builtType != WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY) 0.8f else 1f
         v.showCross = Store.crossOn(this)
         v.crossPx = dp(Store.crossSize(this)).toFloat()
-        v.crossAlpha = Store.crossAlpha(this) / 100f
+        v.crossAlpha = minOf(1f, Store.crossAlpha(this) / 100f / comp)
         v.showRing = Store.ringOn(this)
         v.ringPx = dp(Store.ringSize(this)).toFloat()
         v.strokePx = dp(Store.ringStroke(this)).toFloat()
-        v.ringAlpha = Store.ringAlpha(this) / 100f
+        v.ringAlpha = minOf(1f, Store.ringAlpha(this) / 100f / comp)
         v.invalidate()
     }
 
@@ -653,7 +650,8 @@ class MacroService : AccessibilityService() {
         if (!Store.crossOn(this) && !Store.ringOn(this)) return
         val v = CrosshairView(this)
         styleCross(v)
-        val lp = baseLp(crossSidePx(), crossSidePx(), false, passType()) // không nhận chạm, cú chạm đi xuyên xuống game
+        // dùng quyền "Hiển thị trên ứng dụng khác" (không dùng cửa sổ Trợ năng); không nhận chạm nên cú chạm đi xuyên xuống game
+        val lp = baseLp(crossSidePx(), crossSidePx(), false, builtType)
         placeCross(lp)
         crossView = v
         crossLp = lp
