@@ -835,32 +835,50 @@ class MacroService : AccessibilityService() {
     // ---- nút main "cảm ứng xuyên": cửa sổ không nhận chạm, nên kích hoạt bằng vị trí ngón THẬT đọc từ /dev/input (GhostTouch)
     private val fingerMain = HashMap<Int, Int>() // tracking id -> id nút main đang bị ngón đó giữ
 
+    private var passDiag: TextView? = null
+    private var fingerEvents = 0
+
+    /** Đổi toạ độ ngón thật (‰ theo trục RAW của tấm cảm ứng) sang toạ độ màn hình hiện tại. */
+    private fun fingerToScreen(p: IntArray): Pair<Double, Double> {
+        val (sw, sh) = screenSize()
+        val rx = p[1] / 1000.0
+        val ry = p[2] / 1000.0
+        val nx: Double
+        val ny: Double
+        when (displayRotation() and 3) {
+            1 -> { nx = ry; ny = 1.0 - rx }
+            2 -> { nx = 1.0 - rx; ny = 1.0 - ry }
+            3 -> { nx = 1.0 - ry; ny = rx }
+            else -> { nx = rx; ny = ry }
+        }
+        return Pair(nx * sw, ny * sh)
+    }
+
     private fun onFingers(pts: List<IntArray>) {
+        fingerEvents++
+        if (mode == Mode.EDIT) {
+            // chẩn đoán trên bảng setup: thấy ngay có nhận được ngón tay thật không + toạ độ quy đổi
+            val d = passDiag
+            if (d != null) {
+                d.text = if (pts.isEmpty()) "Ngón tay: (đã nhấc) · đã nhận $fingerEvents tín hiệu"
+                else {
+                    val (x, y) = fingerToScreen(pts[0])
+                    "Ngón tay: ${x.toInt()},${y.toInt()} · đã nhận $fingerEvents tín hiệu"
+                }
+            }
+        }
         if (mode != Mode.RUN) {
             if (fingerMain.isNotEmpty()) releaseAllFingers()
             return
         }
-        val (sw, sh) = screenSize()
-        val rot = displayRotation() and 3
         val seen = HashSet<Int>()
         for (p in pts) {
             val tid = p[0]
             seen.add(tid)
             if (fingerMain.containsKey(tid)) continue
-            val rx = p[1] / 1000.0
-            val ry = p[2] / 1000.0
-            val nx: Double
-            val ny: Double
-            when (rot) {
-                1 -> { nx = ry; ny = 1.0 - rx }
-                2 -> { nx = 1.0 - rx; ny = 1.0 - ry }
-                3 -> { nx = 1.0 - ry; ny = rx }
-                else -> { nx = rx; ny = ry }
-            }
-            val x = nx * sw
-            val y = ny * sh
+            val (x, y) = fingerToScreen(p)
             val hit = buttons.firstOrNull {
-                isPass(it) && hypot(x - it.x, y - it.y) <= dp(it.sizeDp) / 2.0
+                isPass(it) && hypot(x - it.x, y - it.y) <= dp(it.sizeDp) / 2.0 + dp(6)
             } ?: continue
             fingerMain[tid] = hit.id
             mainPress(hit, btnViews[hit.id])
@@ -1660,6 +1678,14 @@ class MacroService : AccessibilityService() {
             )
             passNote.setPadding(dp(2), dp(6), dp(2), 0)
             c.addView(passNote)
+            if (b.passThru) {
+                val dg = label("Ngón tay: chạm thử lên màn hình để kiểm tra · đã nhận $fingerEvents tín hiệu", 11f, Theme.LIME)
+                dg.setPadding(dp(2), dp(4), dp(2), 0)
+                c.addView(dg)
+                passDiag = dg
+            } else {
+                passDiag = null
+            }
             if (b.trigger == TRIG_HOLD) {
                 val note = label("Giữ ngón tay trên nút main: chuỗi cứ lặp đi lặp lại, thả tay là dừng.", 11f, Theme.MUTED)
                 note.setPadding(dp(2), dp(6), dp(2), 0)
