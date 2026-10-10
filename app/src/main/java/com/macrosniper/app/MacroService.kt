@@ -89,9 +89,7 @@ class MacroService : AccessibilityService() {
     private val adbListener: () -> Unit = {
         if (mode == Mode.EDIT && selectedId == -1) refreshPanel()
         // trạng thái Gỡ lỗi WiFi đổi -> nút main "xuyên" có thể bật / tắt được -> cập nhật cờ cảm ứng
-        if (mode == Mode.RUN && buttons.any { it.kind == Kind.MAIN && it.passThru } &&
-            buttons.any { it.kind == Kind.MAIN && it.passThru && (isPass(it) == (btnLps[it.id]?.flags?.and(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0)) }
-        ) applyModeUi(animate = false)
+        syncPassFlags()
     }
     private var logoBmp: Bitmap? = null
 
@@ -105,6 +103,7 @@ class MacroService : AccessibilityService() {
                         startOverlay()
                     } else {
                         checkHealth()
+                        syncPassFlags() // hết thời gian "trễ" thì trả lại trạng thái đúng
                     }
                     if (Store.tapMode(this@MacroService) == TAP_ADB) AdbClient.tick(applicationContext)
                 }
@@ -314,8 +313,31 @@ class MacroService : AccessibilityService() {
         ) WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY else builtType
 
     /** Nút main đang ở chế độ "cảm ứng xuyên" thật sự: bật cài đặt + có luồng đọc ngón thật (Gỡ lỗi WiFi đã kết nối). */
-    private fun isPass(b: MacroButton): Boolean =
-        b.kind == Kind.MAIN && b.passThru && Store.tapMode(this) == TAP_ADB && AdbClient.fingersAvailable()
+    private var lastFingersOk = 0L
+
+    /**
+     * Có chút "trễ" (4 giây): luồng đọc ngón chớp tắt ngắn (kết nối lại ADB...) thì nút main vẫn giữ chế độ KHÔNG nhận chạm,
+     * tránh việc cửa sổ nút main lúc nhận lúc không -> khi thì chỉ chạm được UI app, khi thì chỉ chạm được game.
+     */
+    private fun isPass(b: MacroButton): Boolean {
+        if (b.kind != Kind.MAIN || !b.passThru || Store.tapMode(this) != TAP_ADB) return false
+        val now = SystemClock.uptimeMillis()
+        if (AdbClient.fingersAvailable()) {
+            lastFingersOk = now
+            return true
+        }
+        return lastFingersOk != 0L && now - lastFingersOk < 4000L
+    }
+
+    /** Đồng bộ lại cờ cảm ứng của các nút main "xuyên" nếu trạng thái thật sự đổi (gọi từ watchdog / ADB listener). */
+    private fun syncPassFlags() {
+        if (mode != Mode.RUN) return
+        val mismatch = buttons.any {
+            it.kind == Kind.MAIN && it.passThru &&
+                (isPass(it) == (((btnLps[it.id]?.flags ?: 0) and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0))
+        }
+        if (mismatch) applyModeUi(animate = false)
+    }
 
     private fun buttonType(b: MacroButton): Int =
         if (b.kind == Kind.NUM || isPass(b)) passType() else builtType
@@ -1577,25 +1599,95 @@ class MacroService : AccessibilityService() {
 
     // ---- nội dung: chỉnh một nút
 
+    // bước của nút -/+ trên mọi thanh trượt: 10 (mặc định) hoặc 1; lưu lại cho lần sau
+    private val stepChips = ArrayList<TextView>()
+
+    private fun sliderStep(): Int = Store.sliderStep(this)
+
+    private fun stepChipText() = "×${sliderStep()}"
+
     private fun sliderRow(
         name: String, min: Int, max: Int, value: Int,
         fmt: (Int) -> String, onChange: (Int, Boolean) -> Unit
     ): View {
-        val row = LinearLayout(this)
-        row.orientation = LinearLayout.HORIZONTAL
-        row.gravity = Gravity.CENTER_VERTICAL
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
 
-        val tv = label(name, 12f, Theme.MUTED)
-        row.addView(tv, LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
+        // hàng trên: tên | [-] giá trị [+] | [×10 / ×1]
+        val top = LinearLayout(this)
+        top.orientation = LinearLayout.HORIZONTAL
+        top.gravity = Gravity.CENTER_VERTICAL
+        top.addView(label(name, 12f, Theme.MUTED), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
         val sb = SeekBar(this)
+        val vt = label(fmt(value), 12f, Theme.ACCENT, true)
+        vt.gravity = Gravity.CENTER
+
+        // đặt giá trị mới (từ nút -/+): cập nhật thanh, chữ, rồi báo ra ngoài
+        fun setValue(nv: Int, done: Boolean) {
+            val c = nv.coerceIn(min, max)
+            sb.progress = c - min
+            vt.text = fmt(c)
+            onChange(c, done)
+        }
+
+        // giữ nút -/+ để chạy liên tục
+        fun stepBtn(sym: String, dir: Int): TextView {
+            val t = label(sym, 16f, Theme.ACCENT, true)
+            t.gravity = Gravity.CENTER
+            t.background = roundedBg(Theme.FIELD, dp(8).toFloat(), Theme.STROKE, dp(1))
+            t.isClickable = true
+            val rep = object : Runnable {
+                override fun run() {
+                    setValue(sb.progress + min + dir * sliderStep(), false)
+                    handler.postDelayed(this, 90)
+                }
+            }
+            t.setOnTouchListener { v, e ->
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        setPanelFocusable(false)
+                        v.isPressed = true
+                        setValue(sb.progress + min + dir * sliderStep(), false)
+                        handler.postDelayed(rep, 420)
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        v.isPressed = false
+                        handler.removeCallbacks(rep)
+                        onChange(sb.progress + min, true)
+                    }
+                }
+                true
+            }
+            return t
+        }
+
+        top.addView(stepBtn("−", -1), LinearLayout.LayoutParams(dp(32), dp(28)))
+        top.addView(vt, LinearLayout.LayoutParams(dp(56), ViewGroup.LayoutParams.WRAP_CONTENT))
+        top.addView(stepBtn("+", 1), LinearLayout.LayoutParams(dp(32), dp(28)))
+
+        val chip = label(stepChipText(), 12f, Color.parseColor("#0B120A"), true)
+        chip.gravity = Gravity.CENTER
+        chip.background = roundedBg(Theme.ACCENT, dp(8).toFloat())
+        chip.isClickable = true
+        chip.setOnClickListener {
+            setPanelFocusable(false)
+            Store.setSliderStep(this, if (sliderStep() == 10) 1 else 10)
+            stepChips.removeAll { !it.isAttachedToWindow && it !== chip }
+            for (c in stepChips) c.text = stepChipText()
+            chip.text = stepChipText()
+        }
+        stepChips.add(chip)
+        val cl = LinearLayout.LayoutParams(dp(40), dp(28))
+        cl.leftMargin = dp(6)
+        top.addView(chip, cl)
+        col.addView(top, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
         sb.max = max - min
         sb.progress = (value - min).coerceIn(0, max - min)
         sb.progressTintList = ColorStateList.valueOf(Theme.ACCENT)
         sb.thumbTintList = ColorStateList.valueOf(Theme.ACCENT)
         sb.progressBackgroundTintList = ColorStateList.valueOf(Color.parseColor("#3A4A38"))
-        val vt = label(fmt(value), 12f, Theme.ACCENT, true)
-        vt.gravity = Gravity.END
         sb.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar, p: Int, fromUser: Boolean) {
                 val v = p + min
@@ -1608,9 +1700,8 @@ class MacroService : AccessibilityService() {
                 onChange(s.progress + min, true)
             }
         })
-        row.addView(sb, LinearLayout.LayoutParams(0, dp(36), 1f))
-        row.addView(vt, LinearLayout.LayoutParams(dp(54), ViewGroup.LayoutParams.WRAP_CONTENT))
-        return row
+        col.addView(sb, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(32)))
+        return col
     }
 
     private fun buildEditContent(c: LinearLayout, b: MacroButton) {
@@ -1703,7 +1794,7 @@ class MacroService : AccessibilityService() {
             }, pl)
             val passNote = label(
                 if (!b.passThru) "Tắt: nút main nhận chạm (che phần game bên dưới)."
-                else if (Store.tapMode(this) == TAP_ADB && AdbClient.fingersAvailable()) "Bật: ngón chạm xuyên xuống game, nút main vẫn kích hoạt macro."
+                else if (Store.tapMode(this) == TAP_ADB && AdbClient.fingersAvailable()) "Bật: nút main chỉ là vùng kiểm tra cảm ứng trong đúng vòng tròn — không nhận chạm, game / app bên dưới vẫn chạm bình thường."
                 else "Bật nhưng CHƯA hoạt động: cần chế độ Gỡ lỗi WiFi đã kết nối (để đọc ngón tay). Tạm thời nút vẫn chặn cảm ứng.",
                 11f, Theme.MUTED
             )
