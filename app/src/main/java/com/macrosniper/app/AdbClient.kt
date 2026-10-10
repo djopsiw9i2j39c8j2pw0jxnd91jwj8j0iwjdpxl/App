@@ -716,4 +716,47 @@ object AdbClient {
         }
         return true
     }
+
+    /**
+     * Vuốt thẳng (x1,y1) -> (x2,y2) trong [durMs] ms. [done] gọi khi vuốt xong. Trả về false nếu chưa kết nối.
+     * Ưu tiên ngón tay phụ (GhostTouch, lệnh W); không có thì dùng `input swipe`.
+     */
+    fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, rot: Int, w: Int, h: Int, durMs: Int, done: () -> Unit): Boolean {
+        val o = outS
+        if (state != State.CONNECTED || o == null) return false
+        val id = seq.incrementAndGet()
+        acks[id] = done
+
+        val g = ghostOut
+        if (ghostReady && g != null) {
+            io.execute {
+                try {
+                    g.write("W $id $x1 $y1 $x2 $y2 $rot $w $h $durMs\n".toByteArray())
+                    g.flush()
+                } catch (_: Throwable) {
+                    ghostReady = false
+                    ghostNote = "ngón phụ lỗi, tạm dùng input swipe"
+                    acks.remove(id)?.invoke()
+                    notifyUi()
+                }
+            }
+            return true
+        }
+
+        io.execute {
+            try {
+                o.write("input swipe $x1 $y1 $x2 $y2 $durMs; echo __MS''DONE_$id\n".toByteArray())
+                o.flush()
+            } catch (_: Throwable) {
+                acks.remove(id)?.invoke()
+                if (stream != null) {
+                    closeQuietly()
+                    lastError = "mất kết nối"
+                    state = State.OFF
+                    notifyUi()
+                }
+            }
+        }
+        return true
+    }
 }

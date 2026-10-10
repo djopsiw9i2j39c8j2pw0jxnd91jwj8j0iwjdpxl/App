@@ -39,6 +39,7 @@ import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import kotlin.math.atan2
 import kotlin.math.hypot
 
 enum class Mode { OFF, RUN, EDIT }
@@ -89,9 +90,7 @@ class MacroService : AccessibilityService() {
     private val adbListener: () -> Unit = {
         if (mode == Mode.EDIT && selectedId == -1) refreshPanel()
         // trạng thái Gỡ lỗi WiFi đổi -> nút main "xuyên" có thể bật / tắt được -> cập nhật cờ cảm ứng
-        if (mode == Mode.RUN && buttons.any { it.kind == Kind.MAIN && it.passThru } &&
-            buttons.any { it.kind == Kind.MAIN && it.passThru && (isPass(it) == (btnLps[it.id]?.flags?.and(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0)) }
-        ) applyModeUi(animate = false)
+        if (passMismatch()) applyModeUi(animate = false)
     }
     private var logoBmp: Bitmap? = null
 
@@ -146,6 +145,9 @@ class MacroService : AccessibilityService() {
             ensureAttached() // lần đầu: thử gắn lại nhẹ nhàng, chưa cần dựng lại
         }
         if (builtTapMode != Store.tapMode(this)) onTapModeChanged()
+        // luồng ngón thật mất hẳn -> nhả mọi ngón đang bị coi là giữ (tránh kẹt chuỗi lặp) + chỉnh lại cờ cảm ứng
+        if (fingerMain.isNotEmpty() && !fingersOk()) releaseAllFingers()
+        if (passMismatch()) applyModeUi(animate = false)
     }
 
     override fun onServiceConnected() {
@@ -199,6 +201,7 @@ class MacroService : AccessibilityService() {
         handler.removeCallbacks(watchdog)
         handler.removeCallbacks(configCheck)
         handler.removeCallbacksAndMessages(chainToken)
+        cancelAllSwipes()
         mode = Mode.OFF
         removeAll()
         instance = null
@@ -224,6 +227,7 @@ class MacroService : AccessibilityService() {
     fun stopOverlay() {
         Store.setRunning(this, false)
         cancelChain()
+        cancelAllSwipes()
         AdbClient.disconnect()
         mode = Mode.OFF
         removeAll()
@@ -315,7 +319,32 @@ class MacroService : AccessibilityService() {
 
     /** Nút main đang ở chế độ "cảm ứng xuyên" thật sự: bật cài đặt + có luồng đọc ngón thật (Gỡ lỗi WiFi đã kết nối). */
     private fun isPass(b: MacroButton): Boolean =
-        b.kind == Kind.MAIN && b.passThru && Store.tapMode(this) == TAP_ADB && AdbClient.fingersAvailable()
+        b.isTrigger && b.passThru && Store.tapMode(this) == TAP_ADB && fingersOk()
+
+    /**
+     * Luồng đọc ngón thật có thể chập chờn (nối lại, lỗi ngón phụ...). Nếu cứ theo từng nhịp mà đổi cờ cửa sổ thì nút lúc thì
+     * nuốt chạm (chỉ nhận UI app), lúc thì xuyên mà không kích hoạt (chỉ nhận UI game) -> đó là lỗi "kẹt". Nên chỉ coi là
+     * MẤT luồng khi nó mất liên tục hơn 3 giây; ngắn hơn thì giữ nguyên trạng thái xuyên.
+     */
+    private var fingerOkAt = 0L
+
+    private fun fingersOk(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (AdbClient.fingersAvailable()) {
+            fingerOkAt = now
+            return true
+        }
+        return fingerOkAt != 0L && now - fingerOkAt < 3000L
+    }
+
+    /** Có nút xuyên nào đang có cờ cảm ứng sai so với trạng thái thật không (cần cập nhật tại chỗ). */
+    private fun passMismatch(): Boolean {
+        if (mode != Mode.RUN) return false
+        return buttons.any {
+            it.isTrigger && it.passThru &&
+                    (isPass(it) == (((btnLps[it.id]?.flags ?: 0) and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0))
+        }
+    }
 
     private fun buttonType(b: MacroButton): Int =
         if (b.kind == Kind.NUM || isPass(b)) passType() else builtType
@@ -419,7 +448,7 @@ class MacroService : AccessibilityService() {
             updateWin(v, lp)
         }
         syncArm()
-        if (buttons.any { it.kind == Kind.MAIN && it.passThru }) applyModeUi(animate = false)
+        if (buttons.any { it.isTrigger && it.passThru }) applyModeUi(animate = false)
     }
 
     /** Tự động gắn lại mọi giao diện bị hệ thống gỡ mất (máy nóng, lag, thiếu RAM...). */
@@ -509,6 +538,13 @@ class MacroService : AccessibilityService() {
 
     private fun normalize() {
         for (m in buttons.filter { it.kind == Kind.NUM }.map { it.mainNo }.distinct()) renumber(m)
+        renumberSwipes()
+    }
+
+    private fun renumberSwipes() {
+        buttons.filter { it.kind == Kind.SWIPE }
+            .sortedWith(compareBy({ it.number }, { it.id }))
+            .forEachIndexed { i, x -> x.number = i + 1 }
     }
 
     private fun mainNumbers(): List<Int> =
@@ -816,19 +852,28 @@ class MacroService : AccessibilityService() {
         }
     }
 
+    /** Kích hoạt nút main (chạy chuỗi nút số) hoặc nút vuốt (vuốt từ tâm). */
+    private fun fire(b: MacroButton, repeat: Boolean) {
+        if (b.kind == Kind.SWIPE) startSwipe(b, repeat) else runChain(b.number, repeat)
+    }
+
+    private fun stopFor(b: MacroButton) {
+        if (b.kind == Kind.SWIPE) cancelSwipe(b.id) else cancelChain()
+    }
+
     private fun mainPress(b: MacroButton, bv: BtnView?) {
         bv?.pressedFx = true
         when (b.trigger) {
-            TRIG_PRESS -> runChain(b.number)
-            TRIG_HOLD -> runChain(b.number, true)
+            TRIG_PRESS -> fire(b, false)
+            TRIG_HOLD -> fire(b, true)
         }
     }
 
     private fun mainRelease(b: MacroButton, bv: BtnView?) {
         bv?.pressedFx = false
         when (b.trigger) {
-            TRIG_RELEASE -> runChain(b.number)
-            TRIG_HOLD -> cancelChain() // thả tay -> dừng lặp
+            TRIG_RELEASE -> fire(b, false)
+            TRIG_HOLD -> stopFor(b) // thả tay -> dừng lặp
         }
     }
 
@@ -838,6 +883,11 @@ class MacroService : AccessibilityService() {
     private fun onFingers(pts: List<IntArray>) {
         if (mode != Mode.RUN) {
             if (fingerMain.isNotEmpty()) releaseAllFingers()
+            return
+        }
+        if (pts.isEmpty() && fingerMain.isNotEmpty()) {
+            // không còn ngón nào trên màn hình: nhả hết (dọn sạch trạng thái, tránh kẹt)
+            releaseAllFingers()
             return
         }
         val (sw, sh) = screenSize()
@@ -859,9 +909,11 @@ class MacroService : AccessibilityService() {
             }
             val x = nx * sw
             val y = ny * sh
-            val hit = buttons.firstOrNull {
-                isPass(it) && hypot(x - it.x, y - it.y) <= dp(it.sizeDp) / 2.0
-            } ?: continue
+            // trúng nút xuyên nào (chừa thêm 6dp vì toạ độ cảm ứng làm tròn); chồng nhau thì lấy nút gần tâm nhất
+            val slop = dp(6)
+            val hit = buttons
+                .filter { isPass(it) && hypot(x - it.x, y - it.y) <= dp(it.sizeDp) / 2.0 + slop }
+                .minByOrNull { hypot(x - it.x, y - it.y) } ?: continue
             fingerMain[tid] = hit.id
             mainPress(hit, btnViews[hit.id])
         }
@@ -890,7 +942,7 @@ class MacroService : AccessibilityService() {
         val wantType = buttonType(b)
         val typeChanged = lp.type != wantType
         lp.type = wantType
-        applyTouchable(lp, editing || (b.kind == Kind.MAIN && !isPass(b)))
+        applyTouchable(lp, editing || (b.isTrigger && !isPass(b)))
         v.alpha = viewAlpha(b)
         v.showTag = editing
         v.hilite = editing && b.id == selectedId
@@ -898,25 +950,52 @@ class MacroService : AccessibilityService() {
         v.setOnTouchListener(null)
 
         if (editing) {
-            v.setOnTouchListener(
-                DragListener(
-                    lp = lp,
-                    wm = wm,
-                    slop = dp(6),
-                    limit = {
-                        val s = screenSize()
-                        Pair(s.first - lp.width, s.second - lp.height)
-                    },
-                    onMove = {
-                        b.x = lp.x + lp.width / 2
-                        b.y = lp.y + lp.height / 2
-                        backdrop?.invalidate()
-                    },
-                    onTap = { selectButton(b.id) },
-                    onDragEnd = { persist() }
-                )
+            val drag = DragListener(
+                lp = lp,
+                wm = wm,
+                slop = dp(6),
+                limit = {
+                    val s = screenSize()
+                    Pair(s.first - lp.width, s.second - lp.height)
+                },
+                onMove = {
+                    b.x = lp.x + lp.width / 2
+                    b.y = lp.y + lp.height / 2
+                    backdrop?.invalidate()
+                },
+                onTap = { selectButton(b.id) },
+                onDragEnd = { persist() }
             )
-        } else if (b.kind == Kind.MAIN) {
+            if (b.kind == Kind.SWIPE) {
+                // nút vuốt: chạm trúng núm nhỏ trên viền thì xoay hướng vuốt, chạm chỗ khác thì kéo / chọn nút như thường
+                var knob = false
+                v.setOnTouchListener { view, e ->
+                    val bv = view as BtnView
+                    when (e.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            knob = bv.hitKnob(e.x, e.y)
+                            if (knob) {
+                                setSwipeAngle(b, bv, e.x, e.y)
+                                return@setOnTouchListener true
+                            }
+                        }
+                        MotionEvent.ACTION_MOVE -> if (knob) {
+                            setSwipeAngle(b, bv, e.x, e.y)
+                            return@setOnTouchListener true
+                        }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (knob) {
+                            knob = false
+                            persist()
+                            if (selectedId == b.id) refreshPanel() // đồng bộ thanh trượt hướng trong bảng
+                            return@setOnTouchListener true
+                        }
+                    }
+                    drag.onTouch(view, e)
+                }
+            } else {
+                v.setOnTouchListener(drag)
+            }
+        } else if (b.isTrigger) {
             // Chế độ "tiếp quản ngón thật": khi macro chạm, hệ thống HUỶ ngón thật 1 lần rồi app bơm lại đúng ngón đó.
             // Nên nút main sẽ thấy CANCEL rồi DOWN lặp lại ngay -> bỏ qua cặp đó, đừng dừng/khởi động lại chuỗi.
             var held = false
@@ -942,7 +1021,7 @@ class MacroService : AccessibilityService() {
                         }
                         held = false
                         bv.pressedFx = false
-                        if (b.trigger == TRIG_HOLD) cancelChain()
+                        if (b.trigger == TRIG_HOLD) stopFor(b)
                     }
                 }
                 true
@@ -986,6 +1065,7 @@ class MacroService : AccessibilityService() {
 
     private fun enterEdit() {
         cancelChain()
+        cancelAllSwipes()
         mode = Mode.EDIT
         selectedId = -1
         listOpen = false
@@ -1028,6 +1108,56 @@ class MacroService : AccessibilityService() {
                     drawLink(c, prev, n)
                     prev = n
                 }
+            }
+            drawSwipes(c)
+        }
+
+        private val sLine = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            color = Theme.ORANGE
+            alpha = 210
+        }
+        private val sFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Theme.ORANGE
+            alpha = 235
+        }
+
+        /** Xem trước đường vuốt của mỗi nút vuốt: từ điểm bắt đầu (tâm màn hình hoặc nút) theo hướng + quãng đã chỉnh. */
+        private fun drawSwipes(c: Canvas) {
+            val (sw, sh) = screenSize()
+            sLine.strokeWidth = 3f * density
+            for (b in buttons.filter { it.kind == Kind.SWIPE }) {
+                val fromBtn = b.startMode == 1
+                val sx = if (fromBtn) b.x.toFloat() else sw / 2f
+                val sy = if (fromBtn) b.y.toFloat() else sh / 2f
+                val r = Math.toRadians(b.angle.toDouble())
+                val ux = Math.sin(r).toFloat()
+                val uy = (-Math.cos(r)).toFloat()
+                val len = dp(b.dist).toFloat()
+                val ex = (sx + ux * len).coerceIn(0f, sw.toFloat())
+                val ey = (sy + uy * len).coerceIn(0f, sh.toFloat())
+                val off = if (fromBtn) dp(b.sizeDp) / 2f * 0.84f else 0f
+                // điểm bắt đầu: chấm tròn (ở tâm thì thêm vòng ngoài cho dễ thấy)
+                sFill.style = Paint.Style.FILL
+                c.drawCircle(sx, sy, 5f * density, sFill)
+                if (!fromBtn) {
+                    sLine.pathEffect = null
+                    c.drawCircle(sx, sy, 11f * density, sLine)
+                }
+                sLine.pathEffect = DashPathEffect(floatArrayOf(14f * density, 10f * density), 0f)
+                val dl = hypot(ex - sx, ey - sy)
+                if (dl < off + 6f * density) continue
+                c.drawLine(sx + ux * off, sy + uy * off, ex, ey, sLine)
+                val s = 9f * density
+                val px = -uy
+                val py = ux
+                val path = Path()
+                path.moveTo(ex, ey)
+                path.lineTo(ex - ux * s * 1.6f + px * s, ey - uy * s * 1.6f + py * s)
+                path.lineTo(ex - ux * s * 1.6f - px * s, ey - uy * s * 1.6f - py * s)
+                path.close()
+                c.drawPath(path, sFill)
             }
         }
 
@@ -1217,7 +1347,7 @@ class MacroService : AccessibilityService() {
             panelTitle?.text = "MACRO TOUCH  ·  SETUP"
             buildAddContent(content)
         } else {
-            panelTitle?.text = if (b.kind == Kind.MAIN) "Chỉnh main${b.number}" else if (b.mainNo > 0) "Chỉnh nút ${b.number}  ·  main${b.mainNo}" else "Chỉnh nút ${b.number}"
+            panelTitle?.text = if (b.kind == Kind.SWIPE) "Chỉnh nút vuốt kéo${b.number}" else if (b.kind == Kind.MAIN) "Chỉnh main${b.number}" else if (b.mainNo > 0) "Chỉnh nút ${b.number}  ·  main${b.mainNo}" else "Chỉnh nút ${b.number}"
             buildEditContent(content, b)
         }
     }
@@ -1390,6 +1520,12 @@ class MacroService : AccessibilityService() {
         r1.addView(actionBtn("+  Nút macro", true) { addNum() }, weighted(rowH, 0, dp(4)))
         r1.addView(actionBtn("◎  Nút trung tâm", false) { addMain() }, weighted(rowH, dp(4), 0))
         c.addView(r1)
+        val r1s = LinearLayout(this)
+        r1s.orientation = LinearLayout.HORIZONTAL
+        r1s.addView(actionBtn("⇢  Nút vuốt tâm (macro kéo)", false) { addSwipe() }, weighted(dp(38), 0, 0))
+        val r1slp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        r1slp.topMargin = dp(6)
+        c.addView(r1s, r1slp)
 
         // chọn main để nối nút số vào (mỗi main có số 1, 2, 3... riêng)
         val mains = mainNumbers()
@@ -1573,7 +1709,7 @@ class MacroService : AccessibilityService() {
         nameRow.gravity = Gravity.CENTER_VERTICAL
         nameRow.addView(label("Tên nút", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
         val nameEt = textField(
-            if (b.kind == Kind.MAIN) "main${b.number}" else b.number.toString(),
+            if (b.kind == Kind.SWIPE) "kéo${b.number}" else if (b.kind == Kind.MAIN) "main${b.number}" else b.number.toString(),
             b.name,
             InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS,
             16
@@ -1625,46 +1761,10 @@ class MacroService : AccessibilityService() {
             val rl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             rl.topMargin = dp(4)
             c.addView(row, rl)
+        } else if (b.kind == Kind.SWIPE) {
+            buildSwipeSection(c, b)
         } else {
-            val row = LinearLayout(this)
-            row.orientation = LinearLayout.HORIZONTAL
-            row.gravity = Gravity.CENTER_VERTICAL
-            row.addView(label("Kích hoạt", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
-            val opts = listOf(TRIG_PRESS to "Khi ấn", TRIG_RELEASE to "Khi thả", TRIG_HOLD to "Giữ lặp")
-            for ((i, o) in opts.withIndex()) {
-                row.addView(
-                    actionBtn(o.second, b.trigger == o.first) {
-                        b.trigger = o.first
-                        persist()
-                        refreshPanel()
-                    },
-                    weighted(dp(36), if (i == 0) 0 else dp(2), if (i == opts.size - 1) 0 else dp(2))
-                )
-            }
-            val rl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            rl.topMargin = dp(4)
-            c.addView(row, rl)
-            val pl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            pl.topMargin = dp(4)
-            c.addView(toggleRow("Chạm xuyên", b.passThru) { on ->
-                b.passThru = on
-                persist()
-                applyModeUi(animate = false)
-                refreshPanel()
-            }, pl)
-            val passNote = label(
-                if (!b.passThru) "Tắt: nút main nhận chạm (che phần game bên dưới)."
-                else if (Store.tapMode(this) == TAP_ADB && AdbClient.fingersAvailable()) "Bật: ngón chạm xuyên xuống game, nút main vẫn kích hoạt macro."
-                else "Bật nhưng CHƯA hoạt động: cần chế độ Gỡ lỗi WiFi đã kết nối (để đọc ngón tay). Tạm thời nút vẫn chặn cảm ứng.",
-                11f, Theme.MUTED
-            )
-            passNote.setPadding(dp(2), dp(6), dp(2), 0)
-            c.addView(passNote)
-            if (b.trigger == TRIG_HOLD) {
-                val note = label("Giữ ngón tay trên nút main: chuỗi cứ lặp đi lặp lại, thả tay là dừng.", 11f, Theme.MUTED)
-                note.setPadding(dp(2), dp(6), dp(2), 0)
-                c.addView(note)
-            }
+            buildTriggerSection(c, b)
         }
 
         val bottom = LinearLayout(this)
@@ -1674,6 +1774,149 @@ class MacroService : AccessibilityService() {
         val bl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         bl.topMargin = dp(8)
         c.addView(bottom, bl)
+    }
+
+    /** Phần chung của main + nút vuốt: kiểu kích hoạt (ấn / thả / giữ lặp) và công tắc chạm xuyên. */
+    private fun buildTriggerSection(c: LinearLayout, b: MacroButton) {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.addView(label("Kích hoạt", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
+        val opts = listOf(TRIG_PRESS to "Khi ấn", TRIG_RELEASE to "Khi thả", TRIG_HOLD to "Giữ lặp")
+        for ((i, o) in opts.withIndex()) {
+            row.addView(
+                actionBtn(o.second, b.trigger == o.first) {
+                    b.trigger = o.first
+                    persist()
+                    refreshPanel()
+                },
+                weighted(dp(36), if (i == 0) 0 else dp(2), if (i == opts.size - 1) 0 else dp(2))
+            )
+        }
+        val rl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        rl.topMargin = dp(4)
+        c.addView(row, rl)
+        val pl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        pl.topMargin = dp(4)
+        c.addView(toggleRow("Chạm xuyên", b.passThru) { on ->
+            b.passThru = on
+            persist()
+            applyModeUi(animate = false)
+            refreshPanel()
+        }, pl)
+        val passNote = label(
+            if (!b.passThru) "Tắt: nút nhận chạm (che phần game bên dưới)."
+            else if (Store.tapMode(this) == TAP_ADB && AdbClient.fingersAvailable()) "Bật: ngón chạm xuyên xuống game, nút vẫn kích hoạt macro."
+            else "Bật nhưng CHƯA hoạt động: cần chế độ Gỡ lỗi WiFi đã kết nối (để đọc ngón tay). Tạm thời nút vẫn chặn cảm ứng.",
+            11f, Theme.MUTED
+        )
+        passNote.setPadding(dp(2), dp(6), dp(2), 0)
+        c.addView(passNote)
+        if (b.trigger == TRIG_HOLD) {
+            val note = label(
+                if (b.kind == Kind.SWIPE) "Giữ ngón tay trên nút: vuốt lặp đi lặp lại liên tục, thả tay là dừng."
+                else "Giữ ngón tay trên nút main: chuỗi cứ lặp đi lặp lại, thả tay là dừng.",
+                11f, Theme.MUTED
+            )
+            note.setPadding(dp(2), dp(6), dp(2), 0)
+            c.addView(note)
+        }
+    }
+
+    /** Phần riêng của nút vuốt tâm: hướng, độ nhạy, tốc độ, nghỉ, ngẫu nhiên, điểm bắt đầu. */
+    private fun buildSwipeSection(c: LinearLayout, b: MacroButton) {
+        fun redraw() {
+            btnViews[b.id]?.invalidate()
+            backdrop?.invalidate()
+        }
+
+        // hướng vuốt: thanh trượt + 4 nút nhanh (núm nhỏ màu cam trên nút cũng kéo xoay được)
+        c.addView(sliderRow("Hướng vuốt", 0, 359, b.angle, { "${it}°" }) { v, done ->
+            b.angle = v
+            redraw()
+            if (done) persist()
+        })
+        val dirRow = LinearLayout(this)
+        dirRow.orientation = LinearLayout.HORIZONTAL
+        val dirs = listOf("↑ Lên" to 0, "→ Phải" to 90, "↓ Xuống" to 180, "← Trái" to 270)
+        for ((i, d) in dirs.withIndex()) {
+            dirRow.addView(
+                actionBtn(d.first, b.angle == d.second) {
+                    b.angle = d.second
+                    persist()
+                    redraw()
+                    refreshPanel()
+                },
+                weighted(dp(34), if (i == 0) 0 else dp(2), if (i == dirs.size - 1) 0 else dp(2))
+            )
+        }
+        val dlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        dlp.topMargin = dp(2)
+        c.addView(dirRow, dlp)
+
+        c.addView(sliderRow("Độ nhạy", 10, 600, b.dist, { "${it}dp" }) { v, done ->
+            b.dist = v
+            redraw()
+            if (done) persist()
+        })
+        c.addView(sliderRow("Tốc độ vuốt", 16, 800, b.swipeMs, { "${it}ms" }) { v, done ->
+            b.swipeMs = v
+            if (done) persist()
+        })
+        c.addView(sliderRow("Nghỉ giữa lần", 0, 500, b.delayMs, { "${it}ms" }) { v, done ->
+            b.delayMs = v
+            if (done) persist()
+        })
+        c.addView(sliderRow("Ngẫu nhiên", 0, 30, b.jitter, { "$it%" }) { v, done ->
+            b.jitter = v
+            if (done) persist()
+        })
+
+        // điểm bắt đầu vuốt
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.addView(label("Bắt đầu từ", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
+        val starts = listOf(0 to "Tâm màn hình", 1 to "Vị trí nút")
+        for ((i, o) in starts.withIndex()) {
+            row.addView(
+                actionBtn(o.second, b.startMode == o.first) {
+                    b.startMode = o.first
+                    persist()
+                    redraw()
+                    refreshPanel()
+                },
+                weighted(dp(36), if (i == 0) 0 else dp(2), if (i == starts.size - 1) 0 else dp(2))
+            )
+        }
+        val rl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        rl.topMargin = dp(4)
+        c.addView(row, rl)
+
+        buildTriggerSection(c, b)
+
+        val tip = label(
+            "Mẹo: kéo núm tròn màu cam trên viền nút để xoay hướng vuốt. Đường cam nét đứt trên màn hình là xem trước đường vuốt (chấm = điểm bắt đầu, mũi tên = điểm kết thúc). Độ nhạy càng lớn thì mỗi lần vuốt đi càng xa.",
+            11f, Theme.MUTED
+        )
+        tip.setPadding(dp(2), dp(6), dp(2), 0)
+        c.addView(tip)
+    }
+
+    /** Kéo núm hướng: góc từ tâm nút tới ngón tay (0° = lên, 90° = phải); gần các hướng chính (±3°) thì tự hít vào. */
+    private fun setSwipeAngle(b: MacroButton, bv: BtnView, x: Float, y: Float) {
+        val dx = x - bv.width / 2f
+        val dy = y - bv.height / 2f
+        if (hypot(dx, dy) < 4f) return
+        var deg = Math.toDegrees(atan2(dx.toDouble(), (-dy).toDouble()))
+        if (deg < 0) deg += 360.0
+        var a = Math.round(deg).toInt() % 360
+        val snap = Math.round(a / 45.0).toInt() * 45
+        if (Math.abs(snap - a) <= 3) a = snap % 360
+        if (a == b.angle) return
+        b.angle = a
+        bv.invalidate()
+        backdrop?.invalidate()
     }
 
     private fun applySize(b: MacroButton) {
@@ -1768,9 +2011,31 @@ class MacroService : AccessibilityService() {
         refreshPanel()
     }
 
+    private fun addSwipe() {
+        val (sw, sh) = screenSize()
+        val n = (buttons.filter { it.kind == Kind.SWIPE }.maxOfOrNull { it.number } ?: 0) + 1
+        buttons.add(
+            MacroButton(
+                id = nextId(), kind = Kind.SWIPE, number = n,
+                x = sw - dp(210),
+                y = (sh / 2 + (n - 1) * dp(80)).coerceIn(dp(50), maxOf(dp(50), sh - dp(50))),
+                sizeDp = 68, alphaPct = 90, delayMs = 40,
+                mainNo = 0, trigger = TRIG_PRESS,
+                angle = 180, dist = 160, swipeMs = 120, startMode = 0, jitter = 0
+            )
+        )
+        persist()
+        addButtonLive(buttons.last())
+        refreshPanel()
+        toast("Đã thêm nút vuốt tâm · kéo núm cam để chỉnh hướng")
+    }
+
     private fun deleteButton(b: MacroButton) {
         buttons.remove(b)
-        if (b.kind == Kind.MAIN) {
+        cancelSwipe(b.id)
+        if (b.kind == Kind.SWIPE) {
+            renumberSwipes()
+        } else if (b.kind == Kind.MAIN) {
             // các nút số của main này thành "chưa nối main" (có thể nối lại bằng mục "Thuộc main")
             for (x in buttons) if (x.kind == Kind.NUM && x.mainNo == b.number) x.mainNo = 0
             normalize()
@@ -1903,6 +2168,131 @@ class MacroService : AccessibilityService() {
                 tapButton(b.id) { stepChain(gen, ids, i + 1) }
             }
         }, chainToken, SystemClock.uptimeMillis() + wait)
+    }
+
+    // ---------------------------------------------------------------- nút vuốt tâm (macro kéo)
+
+    private val swipeActive = HashMap<Int, Int>() // id nút vuốt -> thế hệ đang chạy (khác = đã bị huỷ)
+    private var swipeSeq = 0
+    private val swipeToken = Any()
+    private val rnd = java.util.Random()
+
+    private fun cancelSwipe(id: Int) {
+        swipeActive.remove(id)
+    }
+
+    private fun cancelAllSwipes() {
+        swipeActive.clear()
+        handler.removeCallbacksAndMessages(swipeToken)
+    }
+
+    /** Bấm nút vuốt: vuốt 1 lần; [repeat] (kiểu giữ lặp) thì vuốt liên tục tới khi thả tay. */
+    private fun startSwipe(b: MacroButton, repeat: Boolean) {
+        if (mode != Mode.RUN || swipeActive.containsKey(b.id)) return // đang vuốt dở thì bỏ qua lần bấm dồn
+        val gen = ++swipeSeq
+        swipeActive[b.id] = gen
+        stepSwipe(b.id, gen, repeat)
+    }
+
+    private fun stepSwipe(id: Int, gen: Int, repeat: Boolean) {
+        if (swipeActive[id] != gen) return
+        val b = buttons.firstOrNull { it.id == id }
+        if (b == null || mode != Mode.RUN) {
+            swipeActive.remove(id)
+            return
+        }
+        performSwipe(b) {
+            if (swipeActive[id] == gen) {
+                if (repeat && mode == Mode.RUN) {
+                    handler.postAtTime({
+                        stepSwipe(id, gen, true)
+                    }, swipeToken, SystemClock.uptimeMillis() + maxOf(b.delayMs, 5))
+                } else {
+                    swipeActive.remove(id)
+                }
+            }
+        }
+    }
+
+    /** Điểm đầu + điểm cuối (px màn hình) của 1 lần vuốt; có "ngẫu nhiên" thì lệch nhẹ quãng + hướng mỗi lần. */
+    private fun swipePoints(b: MacroButton): IntArray {
+        val (sw, sh) = screenSize()
+        val sx = if (b.startMode == 1) b.x.toFloat() else sw / 2f
+        val sy = if (b.startMode == 1) b.y.toFloat() else sh / 2f
+        var len = dp(b.dist).toFloat()
+        var ang = b.angle.toDouble()
+        if (b.jitter > 0) {
+            len *= 1f + (rnd.nextFloat() * 2f - 1f) * b.jitter / 100f
+            ang += (rnd.nextDouble() * 2.0 - 1.0) * b.jitter * 0.5
+        }
+        val r = Math.toRadians(ang)
+        val ex = (sx + (Math.sin(r) * len).toFloat()).coerceIn(0f, (sw - 1).toFloat())
+        val ey = (sy + (-Math.cos(r) * len).toFloat()).coerceIn(0f, (sh - 1).toFloat())
+        return intArrayOf(Math.round(sx), Math.round(sy), Math.round(ex), Math.round(ey))
+    }
+
+    private fun performSwipe(b: MacroButton, next: () -> Unit) {
+        var done = false
+        fun finish() {
+            if (!done) {
+                done = true
+                next()
+            }
+        }
+        if (mode != Mode.RUN) {
+            finish()
+            return
+        }
+        val pt = swipePoints(b)
+        val dur = b.swipeMs.coerceIn(16, 1500)
+        btnViews[b.id]?.flashFx()
+
+        if (Store.tapMode(this) == TAP_ADB) {
+            val (sw, sh) = screenSize()
+            val ok = AdbClient.swipe(pt[0], pt[1], pt[2], pt[3], displayRotation(), sw, sh, dur) {
+                handler.post { finish() }
+            }
+            if (ok) {
+                // đề phòng shell không báo lại: tự đi tiếp sau thời gian vuốt + 1,5 giây
+                handler.postAtTime({ finish() }, swipeToken, SystemClock.uptimeMillis() + dur + 1500)
+                return
+            }
+            val now = SystemClock.uptimeMillis()
+            if (now - lastAdbWarn > 3000) {
+                lastAdbWarn = now
+                toast("Gỡ lỗi WiFi chưa kết nối · đang vuốt tạm bằng Trợ năng")
+            }
+        }
+
+        val path = Path()
+        path.moveTo(pt[0].toFloat(), pt[1].toFloat())
+        if (pt[0] == pt[2] && pt[1] == pt[3]) path.lineTo(pt[2] + 1f, pt[3].toFloat()) else path.lineTo(pt[2].toFloat(), pt[3].toFloat())
+        val gesture = try {
+            GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0L, dur.toLong()))
+                .build()
+        } catch (_: Exception) {
+            null
+        }
+        if (gesture == null) {
+            finish()
+            return
+        }
+        val cb = object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                finish()
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                finish()
+            }
+        }
+        val ok = try {
+            dispatchGesture(gesture, cb, handler)
+        } catch (_: Exception) {
+            false
+        }
+        if (!ok) finish() else handler.postAtTime({ finish() }, swipeToken, SystemClock.uptimeMillis() + dur + 500)
     }
 
     private fun tapButton(id: Int, next: () -> Unit) {
