@@ -63,8 +63,8 @@ object Store {
 
     // ---- Tâm ảo (crosshair) + vòng tròn quanh tâm: cài đặt chung, không gắn với từng macro
     fun crossOn(ctx: Context) = p(ctx).getBoolean("crossOn", false)
-    fun sliderStep(ctx: Context) = p(ctx).getInt("sliderStep", 10)      // bước nút -/+ trên thanh trượt (1 hoặc 10)
-    fun setSliderStep(ctx: Context, v: Int) = p(ctx).edit().putInt("sliderStep", v).apply()
+    fun sliderStep(ctx: Context, key: String) = p(ctx).getInt("sliderStep_$key", 10) // bước nút -/+ của từng thanh trượt (1 hoặc 10)
+    fun setSliderStep(ctx: Context, key: String, v: Int) = p(ctx).edit().putInt("sliderStep_$key", v).apply()
     fun crossSize(ctx: Context) = p(ctx).getInt("crossSize", 28)       // dp, đường kính hình tâm
     fun crossAlpha(ctx: Context) = p(ctx).getInt("crossAlpha", 90)     // %
     fun ringOn(ctx: Context) = p(ctx).getBoolean("ringOn", false)

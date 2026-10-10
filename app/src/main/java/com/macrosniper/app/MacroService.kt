@@ -714,11 +714,11 @@ class MacroService : AccessibilityService() {
             refreshPanel()
         }, lpRow())
         if (Store.crossOn(this)) {
-            c.addView(sliderRow("Kích thước", 8, 100, Store.crossSize(this), { "${it}dp" }) { v, done ->
+            c.addView(sliderRow("Kích thước", 8, 100, Store.crossSize(this), { "${it}dp" }, stepKey = "cross_size") { v, done ->
                 Store.setCrossSize(this, v)
                 updateCrosshair()
             })
-            c.addView(sliderRow("Độ mờ", 5, 100, Store.crossAlpha(this), { "$it%" }) { v, done ->
+            c.addView(sliderRow("Độ mờ", 5, 100, Store.crossAlpha(this), { "$it%" }, stepKey = "cross_alpha") { v, done ->
                 Store.setCrossAlpha(this, v)
                 updateCrosshair()
             })
@@ -862,6 +862,29 @@ class MacroService : AccessibilityService() {
 
     // ---- nút main "cảm ứng xuyên": cửa sổ không nhận chạm, nên kích hoạt bằng vị trí ngón THẬT đọc từ /dev/input (GhostTouch)
     private val fingerMain = HashMap<Int, Int>() // tracking id -> id nút main đang bị ngón đó giữ
+    private val fingerGone = HashMap<Int, Long>() // tracking id vừa biến mất -> thời điểm; chờ ngắn rồi mới coi là nhấc tay
+    private val FINGER_GRACE_MS = 50L
+
+    private val fingerSweep = object : Runnable {
+        override fun run() {
+            sweepFingers()
+        }
+    }
+
+    /** Thả những ngón đã biến mất quá thời gian chờ. */
+    private fun sweepFingers() {
+        val now = SystemClock.uptimeMillis()
+        val it = fingerGone.entries.iterator()
+        while (it.hasNext()) {
+            val e = it.next()
+            if (now - e.value < FINGER_GRACE_MS) continue
+            it.remove()
+            val bid = fingerMain.remove(e.key) ?: continue
+            val b = buttons.firstOrNull { x -> x.id == bid } ?: continue
+            mainRelease(b, btnViews[b.id])
+        }
+        if (fingerGone.isNotEmpty()) handler.postDelayed(fingerSweep, 20)
+    }
 
     private fun onFingers(pts: List<IntArray>) {
         if (mode != Mode.RUN) {
@@ -874,6 +897,7 @@ class MacroService : AccessibilityService() {
         for (p in pts) {
             val tid = p[0]
             seen.add(tid)
+            fingerGone.remove(tid) // ngón quay lại trong thời gian chờ -> vẫn là cú giữ cũ
             if (fingerMain.containsKey(tid)) continue
             val rx = p[1] / 1000.0
             val ry = p[2] / 1000.0
@@ -890,22 +914,36 @@ class MacroService : AccessibilityService() {
             val hit = buttons.firstOrNull {
                 isPass(it) && hypot(x - it.x, y - it.y) <= dp(it.sizeDp) / 2.0
             } ?: continue
+            // ngón mới xuất hiện đúng trong nút vừa có ngón biến mất (do tiếp quản / gửi lại ngón) -> nhận nối tiếp, KHÔNG bấm lại
+            val old = fingerGone.keys.firstOrNull { fingerMain[it] == hit.id }
+            if (old != null) {
+                fingerGone.remove(old)
+                fingerMain.remove(old)
+                fingerMain[tid] = hit.id
+                continue
+            }
             fingerMain[tid] = hit.id
             mainPress(hit, btnViews[hit.id])
         }
-        val iter = fingerMain.entries.iterator()
-        while (iter.hasNext()) {
-            val e = iter.next()
-            if (e.key in seen) continue
-            iter.remove()
-            val b = buttons.firstOrNull { x -> x.id == e.value } ?: continue
-            mainRelease(b, btnViews[b.id])
+        val now = SystemClock.uptimeMillis()
+        var added = false
+        for (k in fingerMain.keys) {
+            if (k !in seen && !fingerGone.containsKey(k)) {
+                fingerGone[k] = now
+                added = true
+            }
+        }
+        if (added) {
+            handler.removeCallbacks(fingerSweep)
+            handler.postDelayed(fingerSweep, 20)
         }
     }
 
     private fun releaseAllFingers() {
         val ids = fingerMain.values.toList()
         fingerMain.clear()
+        fingerGone.clear()
+        handler.removeCallbacks(fingerSweep)
         for (id in ids) {
             val b = buttons.firstOrNull { it.id == id } ?: continue
             mainRelease(b, btnViews[b.id])
@@ -1599,17 +1637,12 @@ class MacroService : AccessibilityService() {
 
     // ---- nội dung: chỉnh một nút
 
-    // bước của nút -/+ trên mọi thanh trượt: 10 (mặc định) hoặc 1; lưu lại cho lần sau
-    private val stepChips = ArrayList<TextView>()
-
-    private fun sliderStep(): Int = Store.sliderStep(this)
-
-    private fun stepChipText() = "×${sliderStep()}"
-
+    // mỗi thanh trượt có bước -/+ RIÊNG: 10 (mặc định) hoặc 1; lưu theo từng thanh
     private fun sliderRow(
         name: String, min: Int, max: Int, value: Int,
-        fmt: (Int) -> String, onChange: (Int, Boolean) -> Unit
+        fmt: (Int) -> String, stepKey: String = name, onChange: (Int, Boolean) -> Unit
     ): View {
+        var step = Store.sliderStep(this, stepKey)
         val col = LinearLayout(this)
         col.orientation = LinearLayout.VERTICAL
 
@@ -1639,7 +1672,7 @@ class MacroService : AccessibilityService() {
             t.isClickable = true
             val rep = object : Runnable {
                 override fun run() {
-                    setValue(sb.progress + min + dir * sliderStep(), false)
+                    setValue(sb.progress + min + dir * step, false)
                     handler.postDelayed(this, 90)
                 }
             }
@@ -1648,7 +1681,7 @@ class MacroService : AccessibilityService() {
                     MotionEvent.ACTION_DOWN -> {
                         setPanelFocusable(false)
                         v.isPressed = true
-                        setValue(sb.progress + min + dir * sliderStep(), false)
+                        setValue(sb.progress + min + dir * step, false)
                         handler.postDelayed(rep, 420)
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -1666,18 +1699,16 @@ class MacroService : AccessibilityService() {
         top.addView(vt, LinearLayout.LayoutParams(dp(56), ViewGroup.LayoutParams.WRAP_CONTENT))
         top.addView(stepBtn("+", 1), LinearLayout.LayoutParams(dp(32), dp(28)))
 
-        val chip = label(stepChipText(), 12f, Color.parseColor("#0B120A"), true)
+        val chip = label("×$step", 12f, Color.parseColor("#0B120A"), true)
         chip.gravity = Gravity.CENTER
         chip.background = roundedBg(Theme.ACCENT, dp(8).toFloat())
         chip.isClickable = true
         chip.setOnClickListener {
             setPanelFocusable(false)
-            Store.setSliderStep(this, if (sliderStep() == 10) 1 else 10)
-            stepChips.removeAll { !it.isAttachedToWindow && it !== chip }
-            for (c in stepChips) c.text = stepChipText()
-            chip.text = stepChipText()
+            step = if (step == 10) 1 else 10
+            Store.setSliderStep(this, stepKey, step)
+            chip.text = "×$step"
         }
-        stepChips.add(chip)
         val cl = LinearLayout.LayoutParams(dp(40), dp(28))
         cl.leftMargin = dp(6)
         top.addView(chip, cl)
@@ -1994,11 +2025,14 @@ class MacroService : AccessibilityService() {
     private var chainGen = 0
     private var chainRunning = false
     private var holdMain = -1 // main đang được giữ tay (chế độ lặp); -1 = không lặp
+    private var chainLastStep = 0L // lần cuối chuỗi tiến được 1 bước (để phát hiện chuỗi bị kẹt)
+    private var pendingMain = -1 // bấm main lúc chuỗi trước còn đang chạy -> nhớ 1 lần, chạy ngay khi chuỗi trước xong
 
     private fun cancelChain() {
         chainGen++
         chainRunning = false
         holdMain = -1
+        pendingMain = -1
         handler.removeCallbacksAndMessages(chainToken)
     }
 
@@ -2009,7 +2043,16 @@ class MacroService : AccessibilityService() {
      * cử chỉ làm đơ màn hình / không xoay được camera).
      */
     private fun runChain(mainNo: Int, repeat: Boolean = false) {
-        if (chainRunning) return // đang chạy dở thì bỏ qua lần bấm dồn
+        if (chainRunning) {
+            // Chuỗi trước KẸT (shell / ADB không báo lại): tự dọn rồi chạy lại, không để "lần ấn tiếp theo" bị nuốt
+            if (SystemClock.uptimeMillis() - chainLastStep > 2500L) {
+                cancelChain()
+            } else {
+                // chuỗi trước còn đang chạy bình thường: nhớ 1 lần bấm để chạy ngay sau đó (không dồn thành hàng dài)
+                if (!repeat) pendingMain = mainNo
+                return
+            }
+        }
         val ids = buttons
             .filter { it.kind == Kind.NUM && it.mainNo == mainNo }
             .sortedBy { it.number }
@@ -2018,13 +2061,21 @@ class MacroService : AccessibilityService() {
         holdMain = if (repeat) mainNo else -1
         chainGen++
         chainRunning = true
+        chainLastStep = SystemClock.uptimeMillis()
         stepChain(chainGen, ids, 0)
     }
 
     private fun stepChain(gen: Int, ids: List<Int>, i: Int) {
         if (gen != chainGen) return
+        chainLastStep = SystemClock.uptimeMillis()
         if (i >= ids.size || mode != Mode.RUN) {
             chainRunning = false
+            val pm = pendingMain
+            pendingMain = -1
+            if (pm != -1 && mode == Mode.RUN) {
+                runChain(pm)
+                return
+            }
             val m = holdMain
             if (m != -1 && mode == Mode.RUN) {
                 // vẫn đang giữ tay -> lặp lại chuỗi
@@ -2075,8 +2126,8 @@ class MacroService : AccessibilityService() {
             ) { handler.post { finish() } }
             if (ok) {
                 v.flashFx()
-                // đề phòng shell không báo lại: tự đi tiếp sau 1,5 giây
-                handler.postAtTime({ finish() }, chainToken, SystemClock.uptimeMillis() + 1500)
+                // đề phòng shell không báo lại: tự đi tiếp sau 0,6 giây (cú chạm thật chỉ ~16ms)
+                handler.postAtTime({ finish() }, chainToken, SystemClock.uptimeMillis() + 600)
                 return
             }
             // ADB chưa kết nối: KHÔNG im lặng nữa -> báo 1 lần và chạm tạm bằng Trợ năng (chạy tiếp xuống dưới)
