@@ -2,7 +2,13 @@ package com.macrosniper.app
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
 import android.content.Context
+import android.os.IBinder
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.content.res.Configuration
@@ -43,11 +49,25 @@ import kotlin.math.hypot
 
 enum class Mode { OFF, RUN, EDIT }
 
-class MacroService : AccessibilityService() {
+class MacroService : Service() {
 
     companion object {
         @Volatile
         var instance: MacroService? = null
+
+        const val ACTION_START = "com.macrosniper.app.START"
+        const val ACTION_STOP = "com.macrosniper.app.STOP"
+        private const val FG_CHANNEL = "running"
+        private const val FG_ID = 4712
+
+        /** Bật dịch vụ nổi (không cần Trợ năng). Trả về false nếu hệ thống không cho khởi động. */
+        fun start(ctx: Context): Boolean = try {
+            val i = Intent(ctx, MacroService::class.java).setAction(ACTION_START)
+            if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(i) else ctx.startService(i)
+            true
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private lateinit var wm: WindowManager
@@ -151,8 +171,8 @@ class MacroService : AccessibilityService() {
         if (builtTapMode != Store.tapMode(this)) onTapModeChanged()
     }
 
-    override fun onServiceConnected() {
-        super.onServiceConnected()
+    override fun onCreate() {
+        super.onCreate()
         instance = this
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         density = resources.displayMetrics.density
@@ -161,12 +181,62 @@ class MacroService : AccessibilityService() {
         AdbClient.listeners.remove(adbListener)
         AdbClient.listeners.add(adbListener)
         AdbClient.fingerListener = { pts -> handler.post { onFingers(pts) } }
-        if (Store.isRunning(this)) startOverlay()
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    override fun onBind(intent: Intent?): IBinder? = null
 
-    override fun onInterrupt() {}
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        goForeground() // phải gọi ngay (trong 5 giây) sau startForegroundService
+        if (intent?.action == ACTION_STOP) {
+            stopOverlay()
+            return START_NOT_STICKY
+        }
+        if (mode == Mode.OFF) {
+            if (intent == null && !Store.isRunning(this)) {
+                stopOverlay() // hệ thống tự khởi động lại dịch vụ nhưng người dùng đã tắt
+                return START_NOT_STICKY
+            }
+            startOverlay()
+        }
+        return START_STICKY
+    }
+
+    /** Thông báo bắt buộc của dịch vụ nền: chạm để mở app, có nút "Tắt" để gỡ nhanh giao diện nổi. */
+    private fun goForeground() {
+        try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= 26) {
+                nm.createNotificationChannel(
+                    NotificationChannel(FG_CHANNEL, "Macro Touch đang chạy", NotificationManager.IMPORTANCE_LOW)
+                )
+            }
+            val open = PendingIntent.getActivity(
+                this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+            )
+            val stop = PendingIntent.getService(
+                this, 1, Intent(this, MacroService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE
+            )
+            @Suppress("DEPRECATION")
+            val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, FG_CHANNEL) else Notification.Builder(this)
+            b.setSmallIcon(R.drawable.ic_tile)
+                .setContentTitle("Macro Touch đang chạy")
+                .setContentText("Chạm để mở app · bấm Tắt để gỡ giao diện nổi")
+                .setContentIntent(open)
+                .setOngoing(true)
+                .addAction(
+                    Notification.Action.Builder(
+                        android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_tile), "Tắt", stop
+                    ).build()
+                )
+            val n = b.build()
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(FG_ID, n, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else {
+                startForeground(FG_ID, n)
+            }
+        } catch (_: Exception) {
+        }
+    }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
@@ -183,11 +253,6 @@ class MacroService : AccessibilityService() {
         if (mode != Mode.OFF) {
             if (builtSize != screenSize()) rebuildAll() else syncArm()
         }
-    }
-
-    override fun onUnbind(intent: android.content.Intent?): Boolean {
-        shutdown()
-        return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
@@ -210,6 +275,16 @@ class MacroService : AccessibilityService() {
     // ---------------------------------------------------------------- API cho MainActivity
 
     fun startOverlay() {
+        val canDraw = try {
+            Settings.canDrawOverlays(this)
+        } catch (_: Exception) {
+            true
+        }
+        if (!canDraw) {
+            toast("Chưa cấp quyền \"Hiển thị trên ứng dụng khác\"")
+            stopOverlay()
+            return
+        }
         Store.setRunning(this, true)
         if (logoBmp == null) {
             logoBmp = BitmapFactory.decodeResource(resources, R.drawable.logo_bubble)
@@ -231,6 +306,11 @@ class MacroService : AccessibilityService() {
         AdbClient.disconnect()
         mode = Mode.OFF
         removeAll()
+        try {
+            stopForeground(Service.STOP_FOREGROUND_REMOVE)
+        } catch (_: Exception) {
+        }
+        stopSelf() // không còn giao diện nổi thì dịch vụ + thông báo cũng tắt
         QuickTileService.refresh(this)
     }
 
@@ -274,19 +354,9 @@ class MacroService : AccessibilityService() {
      * (cửa sổ Trợ năng chặn cảm ứng ở thoát / thông báo / tin nhắn...). Chưa cấp quyền thì dùng Trợ năng tạm.
      */
     @Suppress("DEPRECATION")
-    private fun overlayType(): Int {
-        val can = try {
-            Settings.canDrawOverlays(this)
-        } catch (_: Exception) {
-            false
-        }
-        return if (can) {
-            if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            else WindowManager.LayoutParams.TYPE_PHONE
-        } else {
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
-        }
-    }
+    private fun overlayType(): Int =
+        if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        else WindowManager.LayoutParams.TYPE_PHONE
 
     /**
      * Bật/tắt khả năng nhận chạm của một cửa sổ nổi tại chỗ. Android 12+ chặn cú chạm xuyên qua cửa sổ nổi
@@ -295,9 +365,9 @@ class MacroService : AccessibilityService() {
     private fun applyTouchable(lp: WindowManager.LayoutParams, touchable: Boolean) {
         lp.flags = if (touchable) lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
         else lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-        lp.alpha = if (!touchable && Build.VERSION.SDK_INT >= 31 &&
-            lp.type != WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
-        ) 0.8f else 1f
+        // 0.5 (không phải 0.8): Android cộng dồn độ mờ các cửa sổ nổi chồng nhau (2 cửa sổ 0.5 -> 0.75 <= 0.8) nên cú chạm
+        // vẫn xuyên được khi nút số nằm trong vòng tròn quanh tâm
+        lp.alpha = if (!touchable && Build.VERSION.SDK_INT >= 31) 0.5f else 1f
     }
 
     private fun updateWin(v: View, lp: WindowManager.LayoutParams) {
@@ -313,10 +383,7 @@ class MacroService : AccessibilityService() {
      * (vd. nút số nằm trong vòng tròn quanh tâm -> chặn ống nhòm). Cửa sổ Trợ năng tin cậy thì không bị tính, nên cú chạm đi xuyên hoàn toàn.
      * Lúc setup (cần nhận chạm + nằm dưới bảng / bong bóng) thì dùng lại loại cửa sổ thường.
      */
-    private fun passType(): Int =
-        if (mode == Mode.RUN && Build.VERSION.SDK_INT >= 31 &&
-            builtType != WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
-        ) WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY else builtType
+    private fun passType(): Int = builtType // không còn dùng cửa sổ Trợ năng: Gỡ lỗi WiFi không cần bật Trợ năng
 
     /** Nút main đang ở chế độ "cảm ứng xuyên" thật sự: bật cài đặt + có luồng đọc ngón thật (Gỡ lỗi WiFi đã kết nối). */
     private var lastFingersOk = 0L
@@ -632,9 +699,9 @@ class MacroService : AccessibilityService() {
     }
 
     private fun styleCross(v: CrosshairView) {
-        // Android 12+: cửa sổ nổi không nhận chạm phải có độ mờ cửa sổ 0.8 để cú chạm đi xuyên -> bù lại độ mờ khi vẽ
+        // Android 12+: cửa sổ nổi không nhận chạm phải có độ mờ cửa sổ 0.5 để cú chạm đi xuyên -> bù lại độ mờ khi vẽ
         // để độ mờ hiển thị vẫn đúng như thanh trượt
-        val comp = if (Build.VERSION.SDK_INT >= 31 && builtType != WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY) 0.8f else 1f
+        val comp = if (Build.VERSION.SDK_INT >= 31) 0.5f else 1f
         v.showCross = Store.crossOn(this)
         v.crossPx = dp(Store.crossSize(this)).toFloat()
         v.crossAlpha = minOf(1f, Store.crossAlpha(this) / 100f / comp)
@@ -1392,6 +1459,9 @@ class MacroService : AccessibilityService() {
         if (m == TAP_ADB) AdbClient.connect(applicationContext) else AdbClient.disconnect()
         onTapModeChanged() // đổi cờ cửa sổ tại chỗ, không dựng lại giao diện
         refreshPanel()
+        if (m == TAP_ACC && TouchAccessService.instance == null) {
+            toast("Chế độ Trợ năng cần bật dịch vụ Trợ năng (Cài đặt → Trợ năng → Macro Touch)")
+        }
     }
 
     private fun numField(hint: String, value: String, onText: (String) -> Unit): EditText =
@@ -2226,6 +2296,7 @@ class MacroService : AccessibilityService() {
         }
         val loc = IntArray(2)
         v.getLocationOnScreen(loc)
+        val acc = TouchAccessService.instance // chỉ có khi người dùng đã bật dịch vụ Trợ năng
 
         if (Store.tapMode(this) == TAP_ADB) {
             // chạm qua Gỡ lỗi WiFi: báo xong thì mới đi tiếp. Kèm hướng xoay + kích thước màn hình để
@@ -2244,10 +2315,21 @@ class MacroService : AccessibilityService() {
             }
             // ADB chưa kết nối: KHÔNG im lặng nữa -> báo 1 lần và chạm tạm bằng Trợ năng (chạy tiếp xuống dưới)
             val now = SystemClock.uptimeMillis()
-            if (now - lastAdbWarn > 3000) {
+            if (acc != null && now - lastAdbWarn > 3000) {
                 lastAdbWarn = now
                 toast("Gỡ lỗi WiFi chưa kết nối · đang chạm tạm bằng Trợ năng")
             }
+        }
+
+        if (acc == null) {
+            // không có Trợ năng để chạm dự phòng: báo rõ 1 lần rồi đi tiếp, không làm kẹt chuỗi
+            val now = SystemClock.uptimeMillis()
+            if (now - lastAdbWarn > 3000) {
+                lastAdbWarn = now
+                toast(if (Store.tapMode(this) == TAP_ADB) "Gỡ lỗi WiFi chưa kết nối" else "Chưa bật dịch vụ Trợ năng cho chế độ Trợ năng")
+            }
+            finish()
+            return
         }
 
         val path = Path()
@@ -2264,7 +2346,7 @@ class MacroService : AccessibilityService() {
             }
         }
         val ok = try {
-            dispatchGesture(gesture, cb, handler)
+            acc.dispatchGesture(gesture, cb, handler)
         } catch (_: Exception) {
             false
         }

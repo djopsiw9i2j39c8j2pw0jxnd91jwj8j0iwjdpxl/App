@@ -291,7 +291,7 @@ class MainActivity : Activity() {
         guide.background = roundedBg(Color.parseColor("#0FFFFFFF"), dp(18).toFloat(), Color.parseColor("#1FFFFFFF"), dp(1))
         guide.addView(text("HƯỚNG DẪN NHANH", 12f, Theme.ACCENT, true))
         val steps = listOf(
-            "1.  Bật dịch vụ \"Macro Touch\" trong Cài đặt → Trợ năng, và cấp quyền \"Hiển thị trên các ứng dụng khác\" khi app hỏi.",
+            "1.  Cấp quyền \"Hiển thị trên các ứng dụng khác\" khi app hỏi. Chỉ chế độ \"Trợ năng\" mới cần bật thêm dịch vụ \"Macro Touch (chạm bằng Trợ năng)\" trong Cài đặt → Trợ năng; chế độ \"Gỡ lỗi WiFi\" không cần.",
             "2.  Quay lại đây, bấm BẮT ĐẦU. Bong bóng logo sẽ nổi trên màn hình (kéo thả được).",
             "3.  Chạm bong bóng để mở bảng setup: tạo nút trung tâm main1, rồi chọn main đó để thêm nút số 1, 2, 3... (mỗi main có số riêng: main2 → 1, 2...).",
             "4.  Kéo các nút đến đúng vị trí cần bấm, chạm vào nút để chỉnh size / độ trong (kéo về 0 là tàng hình) / tốc độ. Lúc setup nút luôn hiện tối thiểu 20%.",
@@ -367,6 +367,8 @@ class MainActivity : Activity() {
         Store.setTapMode(this, m)
         if (m == TAP_ADB) AdbClient.connect(applicationContext) else AdbClient.disconnect()
         refreshMode()
+        if (m == TAP_ACC && !serviceEnabled()) showEnableDialog()
+        refreshStatus()
     }
 
     private fun refreshMode() {
@@ -393,7 +395,10 @@ class MainActivity : Activity() {
         this.resolveInfo?.serviceInfo?.packageName
 
     private fun isRunning(): Boolean =
-        serviceEnabled() && Store.isRunning(this) && MacroService.instance != null
+        Store.isRunning(this) && MacroService.instance != null
+
+    /** Chế độ Trợ năng mới cần bật dịch vụ Trợ năng; chế độ Gỡ lỗi WiFi thì không. */
+    private fun needAccessibility(): Boolean = Store.tapMode(this) == TAP_ACC && !serviceEnabled()
 
     /** Đổi giao diện nút bật/tắt theo trạng thái. */
     private fun applyToggle(running: Boolean) {
@@ -418,7 +423,6 @@ class MainActivity : Activity() {
     }
 
     private fun refreshStatus() {
-        val enabled = serviceEnabled()
         val running = isRunning()
         applyToggle(running)
         refreshMode()
@@ -427,19 +431,23 @@ class MainActivity : Activity() {
             running -> {
                 dotBg.setColor(Theme.ACCENT)
                 statusText.text = "Đang chạy"
-                statusSub.text = if (canOverlay()) "Giao diện nổi đang hiển thị trên màn hình"
-                else "Chưa cấp quyền \"Hiển thị trên ứng dụng khác\" · đang vẽ tạm bằng Trợ năng"
+                statusSub.text = if (needAccessibility()) "Chế độ Trợ năng: cần bật dịch vụ Trợ năng để tự chạm"
+                else "Giao diện nổi đang hiển thị trên màn hình"
             }
-            enabled -> {
-                dotBg.setColor(Theme.LIME)
-                statusText.text = "Sẵn sàng"
-                statusSub.text = if (canOverlay()) "Dịch vụ Trợ năng đã bật · bấm BẮT ĐẦU để hiện nút nổi"
-                else "Bấm BẮT ĐẦU để cấp quyền \"Hiển thị trên ứng dụng khác\""
+            !canOverlay() -> {
+                dotBg.setColor(Theme.DANGER)
+                statusText.text = "Chưa cấp quyền hiển thị"
+                statusSub.text = "Bấm BẮT ĐẦU để cấp quyền \"Hiển thị trên ứng dụng khác\""
             }
-            else -> {
+            needAccessibility() -> {
                 dotBg.setColor(Theme.DANGER)
                 statusText.text = "Chưa bật dịch vụ Trợ năng"
-                statusSub.text = "Cần bật để app hiển thị nút nổi và tự chạm màn hình"
+                statusSub.text = "Chế độ Trợ năng cần dịch vụ này · chế độ Gỡ lỗi WiFi thì không cần"
+            }
+            else -> {
+                dotBg.setColor(Theme.LIME)
+                statusText.text = "Sẵn sàng"
+                statusSub.text = "Bấm BẮT ĐẦU để hiện nút nổi"
             }
         }
     }
@@ -476,20 +484,20 @@ class MainActivity : Activity() {
     }
 
     private fun onStartClicked() {
-        val svc = MacroService.instance
-        if (svc != null && !canOverlay()) {
+        if (!canOverlay()) {
             showOverlayDialog()
             return
         }
-        if (svc != null) {
-            svc.startOverlay()
-            refreshStatus()
+        if (needAccessibility()) {
+            showEnableDialog() // chỉ chế độ Trợ năng mới bắt bật Trợ năng
+            return
+        }
+        if (MacroService.start(this)) {
             Toast.makeText(this, "Đã bật! Chạm bong bóng logo để setup macro.", Toast.LENGTH_LONG).show()
+            window.decorView.postDelayed({ refreshStatus() }, 500)
             moveTaskToBack(true)
-        } else if (!serviceEnabled()) {
-            showEnableDialog()
         } else {
-            Toast.makeText(this, "Dịch vụ đang khởi động, thử lại sau vài giây.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Không khởi động được dịch vụ, thử lại.", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -508,7 +516,7 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Bật dịch vụ Trợ năng")
             .setMessage(
-                "Macro Touch cần quyền Trợ năng để hiển thị nút nổi và tự chạm màn hình.\n\n" +
+                "Chế độ chạm \"Trợ năng\" cần dịch vụ Trợ năng để tự chạm màn hình (chế độ \"Gỡ lỗi WiFi\" thì không cần).\n\n" +
                         "Vào Cài đặt → Trợ năng → Ứng dụng đã tải xuống → Macro Touch → Bật.\n\n" +
                         "Nếu công tắc bị mờ (Android 13+): mở \"Thông tin ứng dụng\" → ⋮ → \"Cho phép cài đặt bị hạn chế\", rồi bật lại."
             )
