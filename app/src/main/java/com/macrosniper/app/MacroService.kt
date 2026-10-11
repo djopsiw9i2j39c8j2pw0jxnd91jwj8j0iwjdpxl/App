@@ -69,6 +69,10 @@ class MacroService : AccessibilityService() {
     private var panelLp: WindowManager.LayoutParams? = null
     private var panelContent: LinearLayout? = null
     private var panelTitle: TextView? = null
+    private var panelScroll: View? = null          // phần thân bảng (ẩn khi thu gọn)
+    private var panelCollapseBtn: TextView? = null // nút − / + cạnh nút ✕
+    private var panelCollapsed = false             // bảng đang thu gọn thành 1 thanh
+    private var shareReturnEdit = false            // đang mở bộ chọn tệp từ setup -> xong thì quay lại setup
     private var panelX = -1
     private var panelY = -1
     private var nameDraft = ""
@@ -218,6 +222,7 @@ class MacroService : AccessibilityService() {
         mode = Mode.RUN
         if (Store.tapMode(this) == TAP_ADB) AdbClient.connect(applicationContext) else AdbClient.disconnect()
         rebuildAll()
+        QuickTileService.refresh(this)
     }
 
     fun stopOverlay() {
@@ -226,6 +231,7 @@ class MacroService : AccessibilityService() {
         AdbClient.disconnect()
         mode = Mode.OFF
         removeAll()
+        QuickTileService.refresh(this)
     }
 
     // ---------------------------------------------------------------- tiện ích
@@ -416,6 +422,8 @@ class MacroService : AccessibilityService() {
         panelLp = null
         panelContent = null
         panelTitle = null
+        panelScroll = null
+        panelCollapseBtn = null
     }
 
     /** Gỡ riêng cửa sổ của MỘT nút (không đụng tới các cửa sổ khác). */
@@ -1214,6 +1222,7 @@ class MacroService : AccessibilityService() {
         val width = minOf(sw - dp(16), dp(400))
         panelW = width
         val lp = baseLp(width, WindowManager.LayoutParams.WRAP_CONTENT, true)
+        if (panelCollapsed) lp.width = minOf(width, dp(300))
         lp.x = if (panelX >= 0) panelX.coerceIn(0, maxOf(0, sw - width)) else (sw - width) / 2
         lp.y = if (panelY >= 0) panelY.coerceIn(0, maxOf(0, sh - dp(80))) else dp(8)
         lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
@@ -1236,6 +1245,8 @@ class MacroService : AccessibilityService() {
         val title = label("MACRO TOUCH", 15f, Theme.ACCENT, true)
         title.letterSpacing = 0.06f
         title.setPadding(dp(8), 0, 0, 0)
+        title.maxLines = 1
+        title.ellipsize = android.text.TextUtils.TruncateAt.END
         header.addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
         val close = label("✕", 16f, Theme.TEXT, true)
@@ -1245,6 +1256,17 @@ class MacroService : AccessibilityService() {
             setPanelFocusable(false)
             exitEdit()
         }
+        // nút − / + : thu gọn bảng thành 1 thanh / mở lại
+        val collapse = label(if (panelCollapsed) "+" else "−", 20f, Theme.TEXT, true)
+        collapse.gravity = Gravity.CENTER
+        collapse.background = roundedBg(Theme.FIELD, dp(17).toFloat(), Theme.STROKE, dp(1))
+        collapse.setOnClickListener {
+            setPanelFocusable(false)
+            setPanelCollapsed(!panelCollapsed)
+        }
+        val clp = LinearLayout.LayoutParams(dp(34), dp(34))
+        clp.rightMargin = dp(8)
+        header.addView(collapse, clp)
         header.addView(close, LinearLayout.LayoutParams(dp(34), dp(34)))
 
         header.setOnTouchListener(
@@ -1278,6 +1300,9 @@ class MacroService : AccessibilityService() {
             ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         )
         root.addView(scroll)
+        scroll.visibility = if (panelCollapsed) View.GONE else View.VISIBLE
+        panelScroll = scroll
+        panelCollapseBtn = collapse
 
         panelRoot = root
         panelLp = lp
@@ -1292,7 +1317,7 @@ class MacroService : AccessibilityService() {
         val lp = panelLp ?: return
         val root = panelRoot ?: return
         if (on) {
-            lp.width = panelW
+            lp.width = panelWidthNow()
             lp.height = WindowManager.LayoutParams.WRAP_CONTENT
             applyTouchable(lp, true)
             root.visibility = View.VISIBLE
@@ -1314,6 +1339,22 @@ class MacroService : AccessibilityService() {
             root.visibility = View.GONE
         }
         updateWin(root, lp)
+    }
+
+    private fun panelWidthNow(): Int = if (panelCollapsed) minOf(panelW, dp(300)) else panelW
+
+    /** Thu gọn bảng thành 1 thanh tiêu đề (nhìn rõ màn hình để đặt nút) hoặc mở lại đầy đủ. */
+    private fun setPanelCollapsed(c: Boolean) {
+        panelCollapsed = c
+        panelScroll?.visibility = if (c) View.GONE else View.VISIBLE
+        panelCollapseBtn?.text = if (c) "+" else "−"
+        val lp = panelLp ?: return
+        val root = panelRoot ?: return
+        if (root.visibility == View.VISIBLE) {
+            lp.width = panelWidthNow()
+            lp.height = WindowManager.LayoutParams.WRAP_CONTENT
+            updateWin(root, lp)
+        }
     }
 
     private fun refreshPanel() {
@@ -1613,6 +1654,15 @@ class MacroService : AccessibilityService() {
             slp.topMargin = dp(4)
             c.addView(sv, slp)
         }
+
+        // xuất / nhập macro ra tệp để chia sẻ
+        val rs = LinearLayout(this)
+        rs.orientation = LinearLayout.HORIZONTAL
+        rs.addView(actionBtn("Xuất macro", false) { exportMacro() }, weighted(dp(38), 0, dp(4)))
+        rs.addView(actionBtn("Nhập macro", false) { importMacro() }, weighted(dp(38), dp(4), 0))
+        val rslp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        rslp.topMargin = dp(8)
+        c.addView(rs, rslp)
 
         // xoá macro đã lưu / xoá tất cả nút
         val r4 = LinearLayout(this)
@@ -1978,6 +2028,56 @@ class MacroService : AccessibilityService() {
         persist()
         toast("Đã lưu macro: $name")
         refreshPanel()
+    }
+
+    // ---- xuất / nhập macro (tệp .json)
+
+    /** Mở bộ chọn tệp của hệ thống. Lớp nổi đè lên bộ chọn nên tạm thoát setup, xong thì tự quay lại. */
+    private fun startShare(op: String) {
+        val (sw, sh) = screenSize()
+        val i = Intent(this, ShareActivity::class.java)
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+        i.putExtra(ShareActivity.EXTRA_MODE, op)
+        i.putExtra(ShareActivity.EXTRA_SW, sw)
+        i.putExtra(ShareActivity.EXTRA_SH, sh)
+        shareReturnEdit = mode == Mode.EDIT
+        if (mode == Mode.EDIT) exitEdit()
+        handler.postDelayed({
+            try {
+                startActivity(i)
+            } catch (_: Exception) {
+                toast("Không mở được bộ chọn tệp")
+                onShareDone(false)
+            }
+        }, 200)
+    }
+
+    private fun exportMacro() {
+        if (buttons.isEmpty()) {
+            toast("Chưa có nút nào để xuất")
+            return
+        }
+        persist()
+        val name = nameDraft.trim().ifEmpty { "macro" }
+        val (sw, sh) = screenSize()
+        MacroShare.pendingName = name
+        MacroShare.pendingExport = MacroShare.toJson(name, buttons, sw, sh)
+        startShare(ShareActivity.MODE_EXPORT)
+    }
+
+    private fun importMacro() {
+        startShare(ShareActivity.MODE_IMPORT)
+    }
+
+    /** ShareActivity báo xong (thành công / huỷ / lỗi): quay lại setup, nhập xong thì mở sẵn danh sách macro đã lưu. */
+    fun onShareDone(imported: Boolean) {
+        if (shareReturnEdit && mode == Mode.RUN) {
+            shareReturnEdit = false
+            enterEdit()
+            if (imported) listOpen = true
+            refreshPanel()
+        }
+        shareReturnEdit = false
     }
 
     private fun deleteSavedMacro() {

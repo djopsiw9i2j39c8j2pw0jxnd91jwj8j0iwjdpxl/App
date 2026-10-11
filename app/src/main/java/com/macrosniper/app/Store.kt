@@ -94,7 +94,7 @@ object Store {
         p(ctx).edit().putInt(kx, x).putInt(ky, y).apply()
     }
 
-    private fun encode(list: List<MacroButton>): JSONArray {
+    fun encode(list: List<MacroButton>): JSONArray {
         val arr = JSONArray()
         for (b in list) {
             val o = JSONObject()
@@ -119,7 +119,7 @@ object Store {
         return arr
     }
 
-    private fun decode(arr: JSONArray): MutableList<MacroButton> {
+    fun decode(arr: JSONArray): MutableList<MacroButton> {
         val out = mutableListOf<MacroButton>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
