@@ -1,14 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Chỉ dùng để nói chuyện với adbd ngay trên máy (Gỡ lỗi không dây) và dò dịch vụ mDNS. Không gửi dữ liệu ra internet. -->
+    <!-- Noi chuyen voi adbd ngay tren may (Go loi khong day) + do dich vu mDNS. Khong gui du lieu ra Internet. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- Vẽ nút nổi lên trên các app khác (thay cho cửa sổ Trợ năng vốn hay chặn cảm ứng) -->
+
+    <!-- V9.0: Toan bo giao dien noi deu ve bang quyen nay. KHONG con ve qua Tro nang. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- Foreground service de giao dien noi va Go loi WiFi chay nen khong bi he thong kill -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:allowBackup="true"
@@ -26,14 +31,12 @@
             </intent-filter>
         </activity>
 
-        <!-- Chọn tệp để xuất / nhập macro (trong suốt, tự đóng) -->
         <activity
             android:name=".ShareActivity"
             android:exported="false"
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
-        <!-- Ô Cài đặt nhanh: bật / tắt giao diện nổi -->
         <service
             android:name=".QuickTileService"
             android:exported="true"
@@ -49,6 +52,19 @@
             android:name=".PairReceiver"
             android:exported="false" />
 
+        <!-- V9.0: Foreground service doc lap quan ly UI noi + cham qua Go loi WiFi.
+             KHONG dang ky BIND_ACCESSIBILITY_SERVICE -> khong dinh gi den Tro nang. -->
+        <service
+            android:name=".OverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Macro Touch floating UI and macro engine" />
+        </service>
+
+        <!-- Dich vu Tro nang CHI DUOC DUNG khi nguoi dung chon mode Tro nang.
+             Mode Go loi WiFi khong dinh toi dich vu nay. -->
         <service
             android:name=".MacroService"
             android:exported="true"
