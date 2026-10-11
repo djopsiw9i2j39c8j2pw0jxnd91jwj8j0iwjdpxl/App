@@ -322,7 +322,7 @@ class MacroService : AccessibilityService() {
     private var lastFingersOk = 0L
 
     /**
-     * Có chút "trễ" (4 giây): luồng đọc ngón chớp tắt ngắn (kết nối lại ADB...) thì nút main vẫn giữ chế độ KHÔNG nhận chạm,
+     * Có chút "trễ" (0,6 giây): luồng đọc ngón chớp tắt ngắn (kết nối lại ADB...) thì nút main vẫn giữ chế độ KHÔNG nhận chạm,
      * tránh việc cửa sổ nút main lúc nhận lúc không -> khi thì chỉ chạm được UI app, khi thì chỉ chạm được game.
      */
     private fun isPass(b: MacroButton): Boolean {
@@ -332,7 +332,7 @@ class MacroService : AccessibilityService() {
             lastFingersOk = now
             return true
         }
-        return lastFingersOk != 0L && now - lastFingersOk < 4000L
+        return lastFingersOk != 0L && now - lastFingersOk < 600L
     }
 
     /** Đồng bộ lại cờ cảm ứng của các nút main "xuyên" nếu trạng thái thật sự đổi (gọi từ watchdog / ADB listener). */
@@ -869,7 +869,7 @@ class MacroService : AccessibilityService() {
     // ---- nút main "cảm ứng xuyên": cửa sổ không nhận chạm, nên kích hoạt bằng vị trí ngón THẬT đọc từ /dev/input (GhostTouch)
     private val fingerMain = HashMap<Int, Int>() // tracking id -> id nút main đang bị ngón đó giữ
     private val fingerGone = HashMap<Int, Long>() // tracking id vừa biến mất -> thời điểm; chờ ngắn rồi mới coi là nhấc tay
-    private val FINGER_GRACE_MS = 50L
+    private val FINGER_GRACE_MS = 30L
 
     private val fingerSweep = object : Runnable {
         override fun run() {
@@ -1033,25 +1033,39 @@ class MacroService : AccessibilityService() {
             // Nên nút main sẽ thấy CANCEL rồi DOWN lặp lại ngay -> bỏ qua cặp đó, đừng dừng/khởi động lại chuỗi.
             var held = false
             var cancelAt = 0L
+            // Sau CANCEL do tiếp quản, nếu ngón KHÔNG được bơm lại (DOWN lặp) thì coi như đã nhả: không để trạng thái "đang giữ"
+            // kẹt mãi làm nuốt các lần bấm sau.
+            val expire = Runnable {
+                if (held && SystemClock.uptimeMillis() - cancelAt >= 350L) {
+                    held = false
+                    v.pressedFx = false
+                    if (b.trigger == TRIG_HOLD) cancelChain()
+                }
+            }
             v.setOnTouchListener { view, e ->
                 val bv = view as BtnView
                 when (e.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
-                        val replay = held && SystemClock.uptimeMillis() - cancelAt < 400L
+                        handler.removeCallbacks(expire)
+                        val replay = held && SystemClock.uptimeMillis() - cancelAt < 300L
                         held = true
                         if (replay) return@setOnTouchListener true
                         mainPress(b, bv)
                     }
                     MotionEvent.ACTION_UP -> {
+                        handler.removeCallbacks(expire)
                         held = false
                         mainRelease(b, bv)
                     }
                     MotionEvent.ACTION_CANCEL -> {
                         if (held && AdbClient.takeover && Store.tapMode(this) == TAP_ADB) {
-                            // do tiếp quản: giữ nguyên trạng thái, chờ DOWN lặp lại / UP thật
+                            // do tiếp quản: giữ nguyên trạng thái, chờ DOWN lặp lại / UP thật (quá 350ms không thấy thì tự nhả)
                             cancelAt = SystemClock.uptimeMillis()
+                            handler.removeCallbacks(expire)
+                            handler.postDelayed(expire, 360)
                             return@setOnTouchListener true
                         }
+                        handler.removeCallbacks(expire)
                         held = false
                         bv.pressedFx = false
                         if (b.trigger == TRIG_HOLD) cancelChain()
@@ -2143,7 +2157,7 @@ class MacroService : AccessibilityService() {
     private fun runChain(mainNo: Int, repeat: Boolean = false) {
         if (chainRunning) {
             // Chuỗi trước KẸT (shell / ADB không báo lại): tự dọn rồi chạy lại, không để "lần ấn tiếp theo" bị nuốt
-            if (SystemClock.uptimeMillis() - chainLastStep > 2500L) {
+            if (SystemClock.uptimeMillis() - chainLastStep > 1500L) {
                 cancelChain()
             } else {
                 // chuỗi trước còn đang chạy bình thường: nhớ 1 lần bấm để chạy ngay sau đó (không dồn thành hàng dài)
@@ -2224,8 +2238,8 @@ class MacroService : AccessibilityService() {
             ) { handler.post { finish() } }
             if (ok) {
                 v.flashFx()
-                // đề phòng shell không báo lại: tự đi tiếp sau 0,6 giây (cú chạm thật chỉ ~16ms)
-                handler.postAtTime({ finish() }, chainToken, SystemClock.uptimeMillis() + 600)
+                // đề phòng shell không báo lại: tự đi tiếp sau 0,2 giây (cú chạm thật chỉ ~16ms; lệnh vẫn đi tuần tự nên không bị đảo thứ tự)
+                handler.postAtTime({ finish() }, chainToken, SystemClock.uptimeMillis() + 200)
                 return
             }
             // ADB chưa kết nối: KHÔNG im lặng nữa -> báo 1 lần và chạm tạm bằng Trợ năng (chạy tiếp xuống dưới)
@@ -2259,7 +2273,7 @@ class MacroService : AccessibilityService() {
             finish()
         } else {
             // đề phòng hệ thống không gọi callback: tự đi tiếp sau 400ms để chuỗi không bị kẹt
-            handler.postAtTime({ finish() }, chainToken, SystemClock.uptimeMillis() + 400)
+            handler.postAtTime({ finish() }, chainToken, SystemClock.uptimeMillis() + 300)
         }
     }
 }
