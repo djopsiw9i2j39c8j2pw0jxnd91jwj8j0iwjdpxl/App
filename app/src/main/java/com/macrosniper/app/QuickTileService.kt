@@ -27,22 +27,25 @@ class QuickTileService : TileService() {
     }
 
     override fun onClick() {
-        if (MacroService.instance != null && Store.isRunning(this)) {
-            MacroService.instance?.stopOverlay()
-            update()
+        val svc = MacroService.instance
+        if (svc == null) {
+            openApp() // dịch vụ Trợ năng chưa bật
             return
         }
-        val canDraw = try {
-            Settings.canDrawOverlays(this)
-        } catch (_: Exception) {
-            true
+        if (Store.isRunning(this)) {
+            svc.stopOverlay()
+        } else {
+            val canDraw = try {
+                Settings.canDrawOverlays(this)
+            } catch (_: Exception) {
+                true
+            }
+            if (!canDraw) {
+                openApp() // chưa cấp quyền hiển thị trên ứng dụng khác
+                return
+            }
+            svc.startOverlay()
         }
-        // thiếu quyền vẽ nổi, hoặc chế độ Trợ năng mà chưa bật Trợ năng -> mở app để xử lý
-        if (!canDraw || (Store.tapMode(this) == TAP_ACC && TouchAccessService.instance == null)) {
-            openApp()
-            return
-        }
-        if (!MacroService.start(this)) openApp()
         update()
     }
 
