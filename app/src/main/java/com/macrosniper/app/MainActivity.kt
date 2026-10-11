@@ -68,7 +68,6 @@ class MainActivity : Activity() {
         val root = FrameLayout(this)
         root.setBackgroundColor(Color.parseColor("#0C100C"))
 
-        // quầng sáng xanh phía trên
         val glow = View(this)
         val gd = GradientDrawable()
         gd.gradientType = GradientDrawable.RADIAL_GRADIENT
@@ -87,7 +86,6 @@ class MainActivity : Activity() {
         scroll.addView(col, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(scroll, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        // logo
         val logo = ImageView(this)
         logo.setImageResource(R.drawable.logo_full)
         logo.scaleType = ImageView.ScaleType.CENTER_CROP
@@ -100,7 +98,6 @@ class MainActivity : Activity() {
         logo.elevation = dp(10).toFloat()
         col.addView(logo, LinearLayout.LayoutParams(dp(132), dp(132)))
 
-        // tên app
         val title = text("MACRO TOUCH", 32f, Theme.ACCENT, true)
         title.letterSpacing = 0.14f
         title.gravity = Gravity.CENTER
@@ -108,13 +105,12 @@ class MainActivity : Activity() {
         tlp.topMargin = dp(22)
         col.addView(title, tlp)
 
-        val sub = text("Chuỗi chạm thông minh · Nút nổi · Chính xác từng mili-giây", 13f, Theme.MUTED)
+        val sub = text("Chuoi cham thong minh - Nut noi - Khong can Tro nang (mode Go loi WiFi)", 13f, Theme.MUTED)
         sub.gravity = Gravity.CENTER
         val slp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         slp.topMargin = dp(6)
         col.addView(sub, slp)
 
-        // thẻ trạng thái
         val status = LinearLayout(this)
         status.orientation = LinearLayout.HORIZONTAL
         status.gravity = Gravity.CENTER_VERTICAL
@@ -138,16 +134,15 @@ class MainActivity : Activity() {
         stlp.topMargin = dp(30)
         col.addView(status, stlp)
 
-        // thẻ chọn chế độ chạm
         val modeCard = LinearLayout(this)
         modeCard.orientation = LinearLayout.VERTICAL
         modeCard.setPadding(dp(16), dp(14), dp(16), dp(14))
         modeCard.background = roundedBg(Color.parseColor("#0FFFFFFF"), dp(18).toFloat(), Color.parseColor("#1FFFFFFF"), dp(1))
-        modeCard.addView(text("CHẾ ĐỘ CHẠM", 12f, Theme.ACCENT, true))
+        modeCard.addView(text("CHE DO CHAM", 12f, Theme.ACCENT, true))
         val seg = LinearLayout(this)
         seg.orientation = LinearLayout.HORIZONTAL
-        modeAcc = text("Trợ năng", 13f, Theme.ACCENT, true)
-        modeAdb = text("Gỡ lỗi WiFi", 13f, Theme.ACCENT, true)
+        modeAcc = text("Tro nang", 13f, Theme.ACCENT, true)
+        modeAdb = text("Go loi WiFi (khong Tro nang)", 12f, Theme.ACCENT, true)
         for (t in listOf(modeAcc, modeAdb)) {
             t.gravity = Gravity.CENTER
             t.isClickable = true
@@ -172,13 +167,13 @@ class MainActivity : Activity() {
         adbBox.addView(adbStatus)
         val ar = LinearLayout(this)
         ar.orientation = LinearLayout.HORIZONTAL
-        val cb = text("Kết nối", 13f, Color.parseColor("#0B120A"), true)
+        val cb = text("Ket noi", 13f, Color.parseColor("#0B120A"), true)
         cb.gravity = Gravity.CENTER
         cb.background = roundedBg(Theme.ACCENT, dp(12).toFloat())
         cb.isClickable = true
         pressFx(cb)
         cb.setOnClickListener { AdbClient.connect(applicationContext) }
-        val db = text("Ngắt", 13f, Theme.DANGER, true)
+        val db = text("Ngat", 13f, Theme.DANGER, true)
         db.gravity = Gravity.CENTER
         db.background = roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.DANGER, dp(1))
         db.isClickable = true
@@ -192,11 +187,11 @@ class MainActivity : Activity() {
         ar.addView(db, bl2)
         adbBox.addView(ar)
         val an = text(
-            "Cần Android 11+. Ghép cặp (làm 1 lần): vào Tùy chọn nhà phát triển → Gỡ lỗi không dây → " +
-                    "\"Ghép nối thiết bị bằng mã\" và để hộp thoại đó MỞ. Chỉ cần nhập MÃ 6 số, app tự tìm cổng. " +
-                    "Vì hộp thoại nằm ở Cài đặt, hãy bấm \"Gửi thông báo nhập mã\" rồi gõ mã ngay trong thông báo " +
-                    "(hoặc dùng chia đôi màn hình để gõ ở ô dưới). " +
-                    "Mất Wi-Fi thì đổi về Trợ năng để dùng tạm.",
+            "Can Android 11+. Ghep cap (lam 1 lan): vao Tuy chon nha phat trien -> Go loi khong day -> " +
+                    "\"Ghep noi thiet bi bang ma\" va de hop thoai do MO. Chi can nhap MA 6 so, app tu tim cong. " +
+                    "Vi hop thoai nam o Cai dat, hay bam \"Gui thong bao nhap ma\" roi go ma ngay trong thong bao " +
+                    "(hoac dung chia doi man hinh de go o o duoi). " +
+                    "MAT WI-FI: cu cham bi bo qua (bao toast); app tu noi lai khi co Wi-Fi — KHONG tu doi sang Tro nang.",
             11f, Theme.MUTED
         )
         an.setPadding(0, dp(10), 0, 0)
@@ -206,7 +201,7 @@ class MainActivity : Activity() {
         pr.orientation = LinearLayout.HORIZONTAL
         pr.gravity = Gravity.CENTER_VERTICAL
         val codeInput = EditText(this)
-        codeInput.hint = "Mã 6 số"
+        codeInput.hint = "Ma 6 so"
         codeInput.setHintTextColor(Theme.MUTED)
         codeInput.setTextColor(Theme.TEXT)
         codeInput.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 15f)
@@ -214,7 +209,7 @@ class MainActivity : Activity() {
         codeInput.inputType = InputType.TYPE_CLASS_NUMBER
         codeInput.setPadding(dp(12), 0, dp(12), 0)
         codeInput.background = roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.STROKE, dp(1))
-        val pb = text("Ghép cặp", 13f, Color.parseColor("#0B120A"), true)
+        val pb = text("Ghep cap", 13f, Color.parseColor("#0B120A"), true)
         pb.gravity = Gravity.CENTER
         pb.background = roundedBg(Theme.ACCENT, dp(12).toFloat())
         pb.isClickable = true
@@ -222,9 +217,9 @@ class MainActivity : Activity() {
         pb.setOnClickListener {
             val code = codeInput.text.toString().trim()
             if (code.length < 6) {
-                Toast.makeText(this, "Nhập mã 6 số trên hộp thoại ghép nối", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Nhap ma 6 so tren hop thoai ghep noi", Toast.LENGTH_SHORT).show()
             } else {
-                Toast.makeText(this, "Đang ghép cặp...", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Dang ghep cap...", Toast.LENGTH_SHORT).show()
                 AdbClient.pair(applicationContext, code) { ok, msg ->
                     Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                     if (ok) {
@@ -243,7 +238,7 @@ class MainActivity : Activity() {
         prl.topMargin = dp(10)
         adbBox.addView(pr, prl)
 
-        val nb = text("Gửi thông báo nhập mã", 13f, Theme.ACCENT, true)
+        val nb = text("Gui thong bao nhap ma", 13f, Theme.ACCENT, true)
         nb.gravity = Gravity.CENTER
         nb.background = roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.STROKE, dp(1))
         nb.isClickable = true
@@ -253,7 +248,7 @@ class MainActivity : Activity() {
         nbl.topMargin = dp(8)
         adbBox.addView(nb, nbl)
 
-        val ob = text("Mở Tùy chọn nhà phát triển", 13f, Theme.ACCENT, true)
+        val ob = text("Mo Tuy chon nha phat trien", 13f, Theme.ACCENT, true)
         ob.gravity = Gravity.CENTER
         ob.background = roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.STROKE, dp(1))
         ob.isClickable = true
@@ -262,7 +257,7 @@ class MainActivity : Activity() {
             try {
                 startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
             } catch (_: Exception) {
-                Toast.makeText(this, "Không mở được Tùy chọn nhà phát triển", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Khong mo duoc Tuy chon nha phat trien", Toast.LENGTH_SHORT).show()
             }
         }
         val obl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40))
@@ -273,7 +268,6 @@ class MainActivity : Activity() {
         mcl.topMargin = dp(16)
         col.addView(modeCard, mcl)
 
-        // nút bật/tắt (chỉ 1 nút duy nhất, đổi chữ + màu theo trạng thái)
         toggleBtn = text("", 16f, Color.parseColor("#0B120A"), true)
         toggleBtn.gravity = Gravity.CENTER
         toggleBtn.letterSpacing = 0.05f
@@ -284,20 +278,21 @@ class MainActivity : Activity() {
         tgl.topMargin = dp(16)
         col.addView(toggleBtn, tgl)
 
-        // hướng dẫn
         val guide = LinearLayout(this)
         guide.orientation = LinearLayout.VERTICAL
         guide.setPadding(dp(18), dp(16), dp(18), dp(16))
         guide.background = roundedBg(Color.parseColor("#0FFFFFFF"), dp(18).toFloat(), Color.parseColor("#1FFFFFFF"), dp(1))
-        guide.addView(text("HƯỚNG DẪN NHANH", 12f, Theme.ACCENT, true))
+        guide.addView(text("HUONG DAN NHANH (V9.0 - khong can Tro nang)", 12f, Theme.ACCENT, true))
         val steps = listOf(
-            "1.  Bật dịch vụ \"Macro Touch\" trong Cài đặt → Trợ năng, và cấp quyền \"Hiển thị trên các ứng dụng khác\" khi app hỏi.",
-            "2.  Quay lại đây, bấm BẮT ĐẦU. Bong bóng logo sẽ nổi trên màn hình (kéo thả được).",
-            "3.  Chạm bong bóng để mở bảng setup: tạo nút trung tâm main1, rồi chọn main đó để thêm nút số 1, 2, 3... (mỗi main có số riêng: main2 → 1, 2...).",
-            "4.  Kéo các nút đến đúng vị trí cần bấm, chạm vào nút để chỉnh size / độ trong (kéo về 0 là tàng hình) / tốc độ. Lúc setup nút luôn hiện tối thiểu 20%.",
-            "5.  Nút main có 3 kiểu kích hoạt: khi ấn, khi thả, hoặc giữ tay để chuỗi tự lặp lại. Chế độ chạm (Trợ năng / Gỡ lỗi WiFi) chọn ở thẻ phía trên hoặc ngay trên bảng nổi.",
-            "6.  Bấm ✕ để khóa nút. Mở game rồi bấm main1 → máy tự chạm 1 → 2 → 3... đúng tốc độ.",
-            "7.  Muốn gỡ toàn bộ giao diện nổi: mở lại app này và bấm nút TẮT (cũng là nút bật ở trên)."
+            "1.  Cap quyen \"Hien thi tren cac ung dung khac\" (bam BAT DAU, app se mo trang cap quyen).",
+            "2.  Chon che do cham o the ben tren:",
+            "    - Go loi WiFi (khuyen dung, GIONG panda touch pro): KHONG can bat Tro nang, ngan hang khong chan.",
+            "    - Tro nang: dung khi may khong co Go loi khong day (Android < 11). Can bat dich vu Macro Touch trong Cai dat -> Tro nang.",
+            "3.  Bam BAT DAU. Bong bong logo noi tren man hinh (keo tha duoc). Cham bong bong de mo bang setup.",
+            "4.  Tao nut trung tam main1, chon main do roi them nut so 1, 2, 3... Keo vao vi tri, cham de chinh size / do trong / toc do.",
+            "5.  Nut main co 3 kieu kich hoat: Khi an, Khi tha, Giu lap. Bat \"Cham xuyen\" neu muon cham xuyen xuong game (can Go loi WiFi).",
+            "6.  Bam X de khoa nut. Bam main1 -> app tu cham 1 -> 2 -> 3... dung toc do.",
+            "7.  Muon go toan bo giao dien noi: mo lai app va bam nut TAT (cung la nut bat o tren)."
         )
         for (s in steps) {
             val t = text(s, 13f, Theme.TEXT)
@@ -306,7 +301,8 @@ class MainActivity : Activity() {
             guide.addView(t)
         }
         val note = text(
-            "Android 13+ cài từ file APK: nếu công tắc Trợ năng bị mờ, vào Cài đặt → Ứng dụng → Macro Touch → ⋮ → \"Cho phép cài đặt bị hạn chế\", rồi bật lại.",
+            "DIEM MOI o V9.0: dich vu \"Macro Touch\" trong Tro nang GIO CHI DUOC DUNG khi ban chon mode Tro nang. " +
+                    "Mode Go loi WiFi la mot Foreground Service doc lap, khong dang ky quyen Tro nang -> app ngan hang kiem tra se khong thay bat ki thu gi.",
             12f, Theme.MUTED
         )
         note.setPadding(0, dp(14), 0, 0)
@@ -316,7 +312,7 @@ class MainActivity : Activity() {
         col.addView(guide, gl)
 
         val warn = text(
-            "Lưu ý: công cụ này chỉ là một dạng macro có các chức năng touch tương tự như panda touch pro.",
+            "Luu y: cong cu nay chi la mot dang macro co cac chuc nang touch tuong tu nhu panda touch pro.",
             11f, Theme.MUTED
         )
         warn.gravity = Gravity.CENTER
@@ -339,16 +335,15 @@ class MainActivity : Activity() {
         super.onPause()
     }
 
-    /** Gửi thông báo có ô nhập mã; xin quyền thông báo (Android 13+) nếu chưa có. */
     private fun sendPairNotification() {
         if (!PairNotif.canPost(this)) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7)
             return
         }
         if (PairNotif.show(applicationContext)) {
-            Toast.makeText(this, "Đã gửi thông báo · mở Gỡ lỗi không dây → Ghép nối bằng mã rồi nhập mã trong thông báo", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Da gui thong bao - mo Go loi khong day -> Ghep noi bang ma roi nhap ma trong thong bao", Toast.LENGTH_LONG).show()
         } else {
-            Toast.makeText(this, "Chế độ này cần Android 11 trở lên", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Che do nay can Android 11 tro len", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -358,7 +353,7 @@ class MainActivity : Activity() {
             if (grantResults.isNotEmpty() && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 sendPairNotification()
             } else {
-                Toast.makeText(this, "Chưa cấp quyền thông báo nên không gửi được", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Chua cap quyen thong bao nen khong gui duoc", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -367,6 +362,7 @@ class MainActivity : Activity() {
         Store.setTapMode(this, m)
         if (m == TAP_ADB) AdbClient.connect(applicationContext) else AdbClient.disconnect()
         refreshMode()
+        refreshStatus()
     }
 
     private fun refreshMode() {
@@ -383,28 +379,23 @@ class MainActivity : Activity() {
         adbStatus.setTextColor(AdbClient.statusColor())
     }
 
-    private fun serviceEnabled(): Boolean {
+    private fun accessibilityEnabled(): Boolean {
         val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
         val list = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-        return list.any { it.resourceInfo() == packageName }
+        return list.any { it.resolveInfo?.serviceInfo?.packageName == packageName }
     }
 
-    private fun AccessibilityServiceInfo.resourceInfo(): String? =
-        this.resolveInfo?.serviceInfo?.packageName
+    private fun uiRunning(): Boolean = OverlayService.uiRunning(this)
 
-    private fun isRunning(): Boolean =
-        serviceEnabled() && Store.isRunning(this) && MacroService.instance != null
-
-    /** Đổi giao diện nút bật/tắt theo trạng thái. */
     private fun applyToggle(running: Boolean) {
         if (running) {
-            toggleBtn.text = "■   TẮT MACRO & GỠ GIAO DIỆN NỔI"
+            toggleBtn.text = "[STOP]   TAT MACRO & GO GIAO DIEN NOI"
             toggleBtn.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f)
             toggleBtn.setTextColor(Theme.DANGER)
             toggleBtn.background = roundedBg(Color.parseColor("#181010"), dp(20).toFloat(), Theme.DANGER, dp(1))
             toggleBtn.elevation = 0f
         } else {
-            toggleBtn.text = "▶   BẮT ĐẦU DÙNG MACRO"
+            toggleBtn.text = ">   BAT DAU DUNG MACRO"
             toggleBtn.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 16f)
             toggleBtn.setTextColor(Color.parseColor("#0B120A"))
             val sg = GradientDrawable(
@@ -418,34 +409,34 @@ class MainActivity : Activity() {
     }
 
     private fun refreshStatus() {
-        val enabled = serviceEnabled()
-        val running = isRunning()
+        val adbMode = Store.tapMode(this) == TAP_ADB
+        val running = uiRunning()
         applyToggle(running)
         refreshMode()
         val dotBg = statusDot.background as GradientDrawable
         when {
             running -> {
                 dotBg.setColor(Theme.ACCENT)
-                statusText.text = "Đang chạy"
-                statusSub.text = if (canOverlay()) "Giao diện nổi đang hiển thị trên màn hình"
-                else "Chưa cấp quyền \"Hiển thị trên ứng dụng khác\" · đang vẽ tạm bằng Trợ năng"
+                statusText.text = "Dang chay"
+                statusSub.text = if (adbMode) "Giao dien noi: dung Hien thi tren app khac - Cham: Go loi WiFi (khong Tro nang)"
+                else "Giao dien noi: dung Hien thi tren app khac - Cham: Tro nang"
             }
-            enabled -> {
+            canOverlay() -> {
                 dotBg.setColor(Theme.LIME)
-                statusText.text = "Sẵn sàng"
-                statusSub.text = if (canOverlay()) "Dịch vụ Trợ năng đã bật · bấm BẮT ĐẦU để hiện nút nổi"
-                else "Bấm BẮT ĐẦU để cấp quyền \"Hiển thị trên ứng dụng khác\""
+                statusText.text = "San sang"
+                statusSub.text = if (adbMode) "Bam BAT DAU - mode Go loi WiFi, khong can Tro nang"
+                else "Bam BAT DAU - mode Tro nang can bat dich vu Macro Touch trong Cai dat Tro nang"
             }
             else -> {
                 dotBg.setColor(Theme.DANGER)
-                statusText.text = "Chưa bật dịch vụ Trợ năng"
-                statusSub.text = "Cần bật để app hiển thị nút nổi và tự chạm màn hình"
+                statusText.text = "Chua cap quyen \"Hien thi tren ung dung khac\""
+                statusSub.text = "Can cap quyen nay de ve nut noi (khong con dung Tro nang de ve)"
             }
         }
     }
 
     private fun onToggleClicked() {
-        if (isRunning()) onStopClicked() else onStartClicked()
+        if (uiRunning()) onStopClicked() else onStartClicked()
     }
 
     private fun canOverlay(): Boolean = try {
@@ -456,13 +447,13 @@ class MainActivity : Activity() {
 
     private fun showOverlayDialog() {
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("Cấp quyền hiển thị trên ứng dụng khác")
+            .setTitle("Cap quyen \"Hien thi tren ung dung khac\"")
             .setMessage(
-                "Macro Touch vẽ nút nổi lên trên app khác bằng quyền \"Hiển thị trên các ứng dụng khác\" " +
-                        "(không vẽ qua Trợ năng nữa vì cách đó hay chặn cảm ứng khi thoát, xem tin nhắn...).\n\n" +
-                        "Bấm \"Cấp quyền\", bật công tắc cho Macro Touch rồi quay lại bấm BẮT ĐẦU."
+                "V9.0 KHONG con dung Tro nang de ve nut noi. Toan bo giao dien noi (nut, bong bong, bang setup) " +
+                        "duoc ve bang quyen \"Hien thi tren cac ung dung khac\" cua Android.\\n\\n" +
+                        "Bam \"Cap quyen\", bat cong tac cho Macro Touch roi quay lai bam BAT DAU."
             )
-            .setPositiveButton("Cấp quyền") { _, _ ->
+            .setPositiveButton("Cap quyen") { _, _ ->
                 try {
                     val i = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
                     i.data = Uri.parse("package:$packageName")
@@ -471,56 +462,53 @@ class MainActivity : Activity() {
                     startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
                 }
             }
-            .setNegativeButton("Đóng", null)
+            .setNegativeButton("Dong", null)
             .show()
     }
 
     private fun onStartClicked() {
-        val svc = MacroService.instance
-        if (svc != null && !canOverlay()) {
+        if (!canOverlay()) {
             showOverlayDialog()
             return
         }
-        if (svc != null) {
-            svc.startOverlay()
-            refreshStatus()
-            Toast.makeText(this, "Đã bật! Chạm bong bóng logo để setup macro.", Toast.LENGTH_LONG).show()
-            moveTaskToBack(true)
-        } else if (!serviceEnabled()) {
-            showEnableDialog()
-        } else {
-            Toast.makeText(this, "Dịch vụ đang khởi động, thử lại sau vài giây.", Toast.LENGTH_SHORT).show()
+        // Mode Tro nang: can dich vu Tro nang chay thi cu cham moi hoat dong
+        if (Store.tapMode(this) == TAP_ACC && !accessibilityEnabled()) {
+            showEnableAccessibilityDialog()
+            return
         }
+        OverlayService.requestStart(applicationContext)
+        // tre nhe de dich vu kip dang ky instance
+        toggleBtn.postDelayed({
+            refreshStatus()
+            if (uiRunning()) {
+                Toast.makeText(this, "Da bat! Cham bong bong logo de setup macro.", Toast.LENGTH_LONG).show()
+                moveTaskToBack(true)
+            }
+        }, 400)
     }
 
     private fun onStopClicked() {
-        val svc = MacroService.instance
-        if (svc != null) {
-            svc.stopOverlay()
-        } else {
-            Store.setRunning(this, false)
-        }
-        refreshStatus()
-        Toast.makeText(this, "Đã tắt macro và gỡ toàn bộ giao diện nổi.", Toast.LENGTH_SHORT).show()
+        OverlayService.requestStop(applicationContext)
+        Store.setRunning(this, false)
+        toggleBtn.postDelayed({ refreshStatus() }, 300)
+        Toast.makeText(this, "Da tat macro va go toan bo giao dien noi.", Toast.LENGTH_SHORT).show()
     }
 
-    private fun showEnableDialog() {
+    private fun showEnableAccessibilityDialog() {
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("Bật dịch vụ Trợ năng")
+            .setTitle("Mode Tro nang can bat dich vu Tro nang")
             .setMessage(
-                "Macro Touch cần quyền Trợ năng để hiển thị nút nổi và tự chạm màn hình.\n\n" +
-                        "Vào Cài đặt → Trợ năng → Ứng dụng đã tải xuống → Macro Touch → Bật.\n\n" +
-                        "Nếu công tắc bị mờ (Android 13+): mở \"Thông tin ứng dụng\" → ⋮ → \"Cho phép cài đặt bị hạn chế\", rồi bật lại."
+                "Ban dang chon mode cham = Tro nang. Mode nay dung quyen Tro nang de tao cu cham (dispatchGesture).\\n\\n" +
+                        "Neu khong muon dung Tro nang (de ngan hang khong chan): o the \"CHE DO CHAM\" chon \"Go loi WiFi\" roi bam BAT DAU lai.\\n\\n" +
+                        "Van muon mode Tro nang? Vao Cai dat -> Tro nang -> Ung dung da tai xuong -> Macro Touch -> Bat."
             )
-            .setPositiveButton("Mở Cài đặt Trợ năng") { _, _ ->
+            .setPositiveButton("Mo Cai dat Tro nang") { _, _ ->
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             }
-            .setNeutralButton("Thông tin ứng dụng") { _, _ ->
-                val i = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                i.data = Uri.parse("package:$packageName")
-                startActivity(i)
+            .setNeutralButton("Doi sang Go loi WiFi") { _, _ ->
+                setTapModeUi(TAP_ADB)
             }
-            .setNegativeButton("Đóng", null)
+            .setNegativeButton("Dong", null)
             .show()
     }
 }

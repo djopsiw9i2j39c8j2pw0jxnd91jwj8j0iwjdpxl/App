@@ -9,11 +9,10 @@ import android.provider.Settings
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 
-/** Ô trong bảng Cài đặt nhanh (kéo thanh thông báo xuống): bật / tắt giao diện nổi mà không cần mở app. */
+/** O trong bang Cai dat nhanh: bat / tat giao dien noi ma khong can mo app. */
 class QuickTileService : TileService() {
 
     companion object {
-        /** Gọi khi giao diện nổi bật / tắt để ô cập nhật lại trạng thái. */
         fun refresh(ctx: Context) {
             try {
                 TileService.requestListeningState(ctx, ComponentName(ctx, QuickTileService::class.java))
@@ -22,39 +21,25 @@ class QuickTileService : TileService() {
         }
     }
 
-    override fun onStartListening() {
-        update()
-    }
+    override fun onStartListening() { update() }
 
     override fun onClick() {
-        val svc = MacroService.instance
-        if (svc == null) {
-            openApp() // dịch vụ Trợ năng chưa bật
-            return
-        }
-        if (Store.isRunning(this)) {
-            svc.stopOverlay()
+        val canDraw = try { Settings.canDrawOverlays(this) } catch (_: Exception) { true }
+        if (!canDraw) { openApp(); return }
+        if (OverlayService.uiRunning(this)) {
+            OverlayService.requestStop(this)
         } else {
-            val canDraw = try {
-                Settings.canDrawOverlays(this)
-            } catch (_: Exception) {
-                true
-            }
-            if (!canDraw) {
-                openApp() // chưa cấp quyền hiển thị trên ứng dụng khác
-                return
-            }
-            svc.startOverlay()
+            OverlayService.requestStart(this)
         }
         update()
     }
 
     private fun update() {
         val t = qsTile ?: return
-        val on = MacroService.instance != null && Store.isRunning(this)
+        val on = OverlayService.uiRunning(this)
         t.state = if (on) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         t.label = "Macro Touch"
-        if (Build.VERSION.SDK_INT >= 29) t.subtitle = if (on) "Đang bật" else "Đã tắt"
+        if (Build.VERSION.SDK_INT >= 29) t.subtitle = if (on) "Dang bat" else "Da tat"
         t.updateTile()
     }
 

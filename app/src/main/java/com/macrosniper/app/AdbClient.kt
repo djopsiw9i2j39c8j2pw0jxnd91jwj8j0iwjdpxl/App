@@ -308,7 +308,8 @@ object AdbClient {
             notifyUi()
             return
         }
-        // Chế độ Trợ năng tuyệt đối không được dính ADB / GhostTouch (nó giành cảm ứng của máy)
+        // Chi connect khi nguoi dung chon mode "Go loi WiFi" (TAP_ADB).
+        // Mode "Tro nang" khong duoc dinh ADB / GhostTouch (GhostTouch gianh cam ung cua may).
         if (Store.tapMode(app) != TAP_ADB) return
         synchronized(this) {
             if (state != State.OFF) return

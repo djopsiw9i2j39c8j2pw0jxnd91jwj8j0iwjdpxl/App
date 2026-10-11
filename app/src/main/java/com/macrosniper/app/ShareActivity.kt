@@ -119,7 +119,7 @@ class ShareActivity : Activity() {
 
     private fun done(msg: String?, imported: Boolean) {
         if (msg != null) Toast.makeText(applicationContext, msg, Toast.LENGTH_LONG).show()
-        MacroService.instance?.onShareDone(imported)
+        OverlayService.instance?.onShareDone(imported)
         finish()
     }
 }
