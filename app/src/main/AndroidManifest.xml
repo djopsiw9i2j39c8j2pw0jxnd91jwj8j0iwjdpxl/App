@@ -1,17 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Noi chuyen voi adbd ngay tren may (Go loi khong day) + do dich vu mDNS. Khong gui du lieu ra Internet. -->
+    <!-- Chỉ dùng để nói chuyện với adbd ngay trên máy (Gỡ lỗi không dây) và dò dịch vụ mDNS. Không gửi dữ liệu ra internet. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
-    <!-- V9.0: Toan bo giao dien noi deu ve bang quyen nay. KHONG con ve qua Tro nang. -->
+    <!-- Vẽ và quản lý TOÀN BỘ nút nổi bằng quyền này (không dùng cửa sổ của dịch vụ Trợ năng) -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-
-    <!-- Foreground service de giao dien noi va Go loi WiFi chay nen khong bi he thong kill -->
+    <!-- Dịch vụ nền giữ giao diện nổi + kết nối Gỡ lỗi WiFi sống khi app bị đẩy xuống nền -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
@@ -31,12 +29,14 @@
             </intent-filter>
         </activity>
 
+        <!-- Chọn tệp để xuất / nhập macro (trong suốt, tự đóng) -->
         <activity
             android:name=".ShareActivity"
             android:exported="false"
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
+        <!-- Ô Cài đặt nhanh: bật / tắt giao diện nổi -->
         <service
             android:name=".QuickTileService"
             android:exported="true"
@@ -52,19 +52,17 @@
             android:name=".PairReceiver"
             android:exported="false" />
 
-        <!-- V9.0: Foreground service doc lap quan ly UI noi + cham qua Go loi WiFi.
-             KHONG dang ky BIND_ACCESSIBILITY_SERVICE -> khong dinh gi den Tro nang. -->
+        <!-- Giao diện nổi + điều khiển macro: dịch vụ nền thường, KHÔNG phải dịch vụ Trợ năng -->
         <service
             android:name=".OverlayService"
             android:exported="false"
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Macro Touch floating UI and macro engine" />
+                android:value="Hiển thị nút nổi macro chạm màn hình do người dùng chủ động bật" />
         </service>
 
-        <!-- Dich vu Tro nang CHI DUOC DUNG khi nguoi dung chon mode Tro nang.
-             Mode Go loi WiFi khong dinh toi dich vu nay. -->
+        <!-- Dịch vụ Trợ năng MỎNG: chỉ dùng cho chế độ chạm "Trợ năng" (bắn cú chạm). Chế độ Gỡ lỗi WiFi không cần bật nó. -->
         <service
             android:name=".MacroService"
             android:exported="true"
