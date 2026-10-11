@@ -7,13 +7,12 @@ import android.os.Handler
 import android.view.accessibility.AccessibilityEvent
 
 /**
- * Dich vu Tro nang CUA RIENG mode "Tro nang".
+ * Dịch vụ Trợ năng MỎNG: chỉ dùng cho chế độ chạm "Trợ năng" (bắn cú chạm bằng dispatchGesture).
  *
- * - Mode "Tro nang" (dung dispatchGesture): dich vu nay phai duoc bat.
- * - Mode "Go loi WiFi" (dung ADB tu nhung + GhostTouch): KHONG can dich vu nay chay. Ngan hang
- *   kiem tra "co app nao bat Tro nang khong" se khong thay Macro Touch -> khong bi chan.
- *
- * Toan bo viec tao / ve / quan li UI noi va cu cham qua Wi-Fi deu nam o OverlayService.
+ * - KHÔNG vẽ, KHÔNG quản lý giao diện nổi (toàn bộ việc đó do [OverlayService] làm bằng quyền
+ *   "Hiển thị trên ứng dụng khác").
+ * - KHÔNG nghe sự kiện, KHÔNG đọc nội dung màn hình.
+ * - Chế độ "Gỡ lỗi WiFi" hoàn toàn không đụng tới dịch vụ này: có thể để nó TẮT trong Cài đặt → Trợ năng.
  */
 class MacroService : AccessibilityService() {
 
@@ -21,37 +20,58 @@ class MacroService : AccessibilityService() {
         @Volatile
         var instance: MacroService? = null
 
-        /**
-         * Gui 1 cu cham tai (x, y) px man hinh hien tai bang quyen Tro nang.
-         * Tra ve false neu dich vu Tro nang chua bat -> OverlayService hien thong bao, KHONG tu doi mode.
-         */
-        fun dispatchTap(x: Float, y: Float, handler: Handler, done: () -> Unit): Boolean {
-            val svc = instance ?: return false
-            return try {
-                val path = Path().apply { moveTo(x, y) }
-                val stroke = GestureDescription.StrokeDescription(path, 0L, 10L)
-                val gesture = GestureDescription.Builder().addStroke(stroke).build()
-                val cb = object : AccessibilityService.GestureResultCallback() {
-                    override fun onCompleted(g: GestureDescription?) { done() }
-                    override fun onCancelled(g: GestureDescription?) { done() }
-                }
-                svc.dispatchGesture(gesture, cb, handler)
-            } catch (_: Exception) {
-                false
-            }
-        }
+        /** Thời gian đè xuống của mỗi cú chạm (ms). */
+        private const val TAP_MS = 10L
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
+        // báo cho giao diện nổi biết: động cơ chạm Trợ năng đã sẵn sàng -> các nút trở lại bình thường
+        OverlayService.instance?.onAccessibilityChanged()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+
     override fun onInterrupt() {}
 
+    override fun onUnbind(intent: android.content.Intent?): Boolean {
+        release()
+        return super.onUnbind(intent)
+    }
+
     override fun onDestroy() {
-        instance = null
+        release()
         super.onDestroy()
+    }
+
+    private fun release() {
+        if (instance === this) instance = null
+        OverlayService.instance?.onAccessibilityChanged()
+    }
+
+    /**
+     * Bắn 1 cú chạm tại (x, y) px. [done] được gọi khi cử chỉ hoàn tất hoặc bị huỷ (để chuỗi đi tuần tự).
+     * Trả về false nếu hệ thống từ chối cử chỉ.
+     */
+    fun tap(x: Float, y: Float, handler: Handler, done: () -> Unit): Boolean {
+        val path = Path()
+        path.moveTo(x, y)
+        val stroke = GestureDescription.StrokeDescription(path, 0L, TAP_MS)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        val cb = object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                done()
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                done()
+            }
+        }
+        return try {
+            dispatchGesture(gesture, cb, handler)
+        } catch (_: Exception) {
+            false
+        }
     }
 }

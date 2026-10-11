@@ -7,7 +7,6 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Bitmap
@@ -16,12 +15,12 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.DashPathEffect
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Rect
+import android.content.pm.ServiceInfo
 import android.os.Build
-import android.os.Handler
 import android.os.IBinder
+import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
@@ -47,22 +46,24 @@ import kotlin.math.hypot
 
 enum class Mode { OFF, RUN, EDIT }
 
+/**
+ * Dịch vụ giao diện nổi + điều khiển macro. KHÔNG phải dịch vụ Trợ năng: toàn bộ cửa sổ nổi được vẽ bằng quyền
+ * "Hiển thị trên ứng dụng khác" và chạy như một dịch vụ nền thường (foreground service).
+ * Chỉ chế độ "Trợ năng" mới nhờ [MacroService] (dịch vụ Trợ năng mỏng) để bắn cú chạm; chế độ "Gỡ lỗi WiFi" không đụng Trợ năng.
+ */
 class OverlayService : Service() {
 
     companion object {
         @Volatile
         var instance: OverlayService? = null
 
-        const val ACTION_START = "com.macrosniper.app.OVL_START"
-        const val ACTION_STOP = "com.macrosniper.app.OVL_STOP"
-        private const val NOTIF_ID = 9031
-        private const val NOTIF_CHANNEL = "overlay"
+        const val ACTION_START = "com.macrosniper.app.OVERLAY_START"
+        const val ACTION_STOP = "com.macrosniper.app.OVERLAY_STOP"
+        private const val CH_ID = "overlay"
+        private const val NOTIF_ID = 4712
 
-        /** Giao diện nổi đang chạy (đã bấm BẮT ĐẦU và dịch vụ còn sống). */
-        fun uiRunning(ctx: Context): Boolean = instance != null && Store.isRunning(ctx)
-
-        /** Bật dịch vụ nền trước + hiện giao diện nổi (gọi từ Activity / QuickTile). */
-        fun requestStart(ctx: Context) {
+        /** Bật giao diện nổi (khởi động dịch vụ nền nếu chưa chạy). */
+        fun start(ctx: Context) {
             val i = Intent(ctx, OverlayService::class.java).setAction(ACTION_START)
             try {
                 if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(i) else ctx.startService(i)
@@ -70,12 +71,17 @@ class OverlayService : Service() {
             }
         }
 
-        /** Tắt hẳn giao diện nổi và dừng dịch vụ. */
-        fun requestStop(ctx: Context) {
-            try {
-                ctx.startService(Intent(ctx, OverlayService::class.java).setAction(ACTION_STOP))
-            } catch (_: Exception) {
+        /** Tắt giao diện nổi + dừng dịch vụ. */
+        fun stop(ctx: Context) {
+            val svc = instance
+            if (svc != null) {
+                svc.stopOverlay()
+                svc.stopSelf()
+            } else {
+                Store.setRunning(ctx, false)
+                AdbClient.disconnect()
             }
+            QuickTileService.refresh(ctx)
         }
     }
 
@@ -108,7 +114,7 @@ class OverlayService : Service() {
     private var listOpen = false
     private var addTargetMain = 0 // main đang được chọn để thêm nút số vào
     private var builtTapMode = -1 // chế độ chạm lúc dựng overlay (cờ cửa sổ phụ thuộc vào nó)
-    private var builtType = 0 // loại cửa sổ nổi đang dùng (TYPE_APPLICATION_OVERLAY)
+    private var builtType = 0 // loại cửa sổ nổi (luôn là cửa sổ "Hiển thị trên ứng dụng khác")
     private var builtSize: Pair<Int, Int>? = null // cỡ màn hình lúc dựng overlay
     private var backdropLp: WindowManager.LayoutParams? = null
     private var bubbleLp: WindowManager.LayoutParams? = null
@@ -116,7 +122,6 @@ class OverlayService : Service() {
     private var crossLp: WindowManager.LayoutParams? = null
     private var panelW = 0
     private var missTicks = 0 // số nhịp watchdog liên tiếp thấy cửa sổ nổi bị mất
-    private var overlayLostTicks = 0 // số nhịp liên tiếp thấy quyền "hiển thị trên ứng dụng khác" bị thu hồi
     private var pairOpen = false
     private var pairCode = ""
     private var lastAdbWarn = 0L
@@ -132,14 +137,14 @@ class OverlayService : Service() {
     private val watchdog = object : Runnable {
         override fun run() {
             try {
-                if (Store.isRunning(this@MacroService)) {
+                if (Store.isRunning(this@OverlayService)) {
                     if (mode == Mode.OFF) {
                         startOverlay()
                     } else {
                         checkHealth()
                         syncPassFlags() // hết thời gian "trễ" thì trả lại trạng thái đúng
                     }
-                    if (Store.tapMode(this@MacroService) == TAP_ADB) AdbClient.tick(applicationContext)
+                    if (Store.tapMode(this@OverlayService) == TAP_ADB) AdbClient.tick(applicationContext)
                 }
             } catch (_: Exception) {
             }
@@ -151,26 +156,20 @@ class OverlayService : Service() {
      * Chỉ dựng lại TOÀN BỘ giao diện nổi khi thật sự cần:
      *  - cửa sổ nổi bị hệ thống gỡ mất (mất liên tục >= 2 nhịp ~ 1-2 giây),
      *  - đổi hướng / cỡ màn hình,
-     *  - đổi loại cửa sổ (vừa cấp / thu hồi quyền "hiển thị trên ứng dụng khác").
      * Còn lại (đổi chế độ chạm, thêm/xóa nút, vào/ra setup...) chỉ cập nhật tại chỗ, không dựng lại.
      */
     private fun checkHealth() {
-        // Quyền "Hiển thị trên ứng dụng khác" bị thu hồi giữa chừng -> không vẽ được nữa (không còn
-        // Trợ năng dự phòng): tự tắt gọn sau vài nhịp thay vì để giao diện chết lặng.
-        if (!canOverlay()) {
-            overlayLostTicks++
-            if (overlayLostTicks >= 3) {
-                toast("Đã mất quyền \"Hiển thị trên ứng dụng khác\" · Macro Touch tự tắt")
-                stopOverlay()
-                return
-            }
-        } else {
-            overlayLostTicks = 0
-        }
         val size = screenSize()
         val ll = lastLand
         if ((ll != null && ll != isLand()) || (builtSize != null && builtSize != size)) {
             rebuildAll()
+            return
+        }
+        if (!canDraw()) {
+            // người dùng thu hồi quyền "Hiển thị trên ứng dụng khác" -> không vẽ được nữa, tắt gọn
+            toast("Đã thu hồi quyền \"Hiển thị trên ứng dụng khác\" · đã tắt macro")
+            stopOverlay()
+            stopSelf()
             return
         }
         val lost = live.any { !it.first.isAttachedToWindow }
@@ -189,59 +188,82 @@ class OverlayService : Service() {
         if (builtTapMode != Store.tapMode(this)) onTapModeChanged()
     }
 
+    override fun onBind(intent: Intent?): IBinder? = null
+
     override fun onCreate() {
         super.onCreate()
         instance = this
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         density = resources.displayMetrics.density
-        goForeground()
         handler.removeCallbacks(watchdog)
         handler.postDelayed(watchdog, 1000)
         AdbClient.listeners.remove(adbListener)
         AdbClient.listeners.add(adbListener)
         AdbClient.fingerListener = { pts -> handler.post { onFingers(pts) } }
-        if (Store.isRunning(this)) startOverlay()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP -> stopOverlay()
-            else -> if (Store.isRunning(this) || intent == null || intent.action == ACTION_START) startOverlay()
+        if (intent?.action == ACTION_STOP) {
+            stopOverlay()
+            stopSelf()
+            return START_NOT_STICKY
         }
-        return START_STICKY
+        // Dịch vụ nền phải gọi startForeground ngay sau khi được khởi động bằng startForegroundService
+        enterForeground()
+        if (!canDraw()) {
+            // chưa có quyền "Hiển thị trên ứng dụng khác" -> không vẽ được, dừng gọn
+            Store.setRunning(this, false)
+            toast("Chưa cấp quyền \"Hiển thị trên ứng dụng khác\"")
+            QuickTileService.refresh(this)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_START || Store.isRunning(this)) {
+            if (mode == Mode.OFF) startOverlay()
+            return START_STICKY
+        }
+        // bị hệ thống khởi động lại mà trạng thái là đã tắt
+        stopSelf()
+        return START_NOT_STICKY
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    private fun canDraw(): Boolean = try {
+        if (Build.VERSION.SDK_INT >= 23) Settings.canDrawOverlays(this) else true
+    } catch (_: Exception) {
+        false
+    }
 
-    /** Đưa dịch vụ lên nền trước (bắt buộc với startForegroundService) kèm thông báo nhỏ. */
-    private fun goForeground() {
+    private fun enterForeground() {
         try {
-            if (Build.VERSION.SDK_INT >= 26) {
-                val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                if (nm.getNotificationChannel(NOTIF_CHANNEL) == null) {
-                    nm.createNotificationChannel(
-                        NotificationChannel(NOTIF_CHANNEL, "Giao diện nổi Macro Touch", NotificationManager.IMPORTANCE_MIN)
-                    )
-                }
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CH_ID) == null) {
+                nm.createNotificationChannel(
+                    NotificationChannel(CH_ID, "Nút nổi Macro Touch", NotificationManager.IMPORTANCE_MIN)
+                )
             }
             val open = PendingIntent.getActivity(
-                this, 0, Intent(this, MainActivity::class.java),
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )
-            val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, NOTIF_CHANNEL)
-            else Notification.Builder(this)
-            val n = b.setSmallIcon(R.drawable.ic_tile)
+            val stop = PendingIntent.getService(
+                this, 1, Intent(this, OverlayService::class.java).setAction(ACTION_STOP),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CH_ID) else Notification.Builder(this)
+            b.setSmallIcon(android.R.drawable.ic_menu_edit)
                 .setContentTitle("Macro Touch đang chạy")
-                .setContentText("Nút nổi đang hiển thị · chạm để mở app")
+                .setContentText("Chạm để mở app · nút Tắt để gỡ giao diện nổi")
                 .setContentIntent(open)
                 .setOngoing(true)
-                .build()
-            if (Build.VERSION.SDK_INT >= 29) {
+                .addAction(Notification.Action.Builder(null, "Tắt", stop).build())
+            val n = b.build()
+            if (Build.VERSION.SDK_INT >= 34) {
                 startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
             } else {
                 startForeground(NOTIF_ID, n)
             }
         } catch (_: Exception) {
+            // thiếu quyền thông báo vẫn chạy được; chỉ là dịch vụ dễ bị hệ thống dọn hơn
         }
     }
 
@@ -264,6 +286,10 @@ class OverlayService : Service() {
 
     override fun onDestroy() {
         shutdown()
+        try {
+            stopForeground(true)
+        } catch (_: Exception) {
+        }
         super.onDestroy()
     }
 
@@ -292,7 +318,12 @@ class OverlayService : Service() {
         selectedId = -1
         listOpen = false
         mode = Mode.RUN
-        if (Store.tapMode(this) == TAP_ADB) AdbClient.connect(applicationContext) else AdbClient.disconnect()
+        if (Store.tapMode(this) == TAP_ADB) {
+            AdbClient.connect(applicationContext)
+            AdbClient.refreshUnblock(applicationContext) // đã kết nối sẵn từ trước thì áp dụng mở khoá chạm xuyên ngay
+        } else {
+            AdbClient.disconnect()
+        }
         rebuildAll()
         QuickTileService.refresh(this)
     }
@@ -300,17 +331,10 @@ class OverlayService : Service() {
     fun stopOverlay() {
         Store.setRunning(this, false)
         cancelChain()
-        releaseAllFingers()
         AdbClient.disconnect()
         mode = Mode.OFF
         removeAll()
         QuickTileService.refresh(this)
-        try {
-            if (Build.VERSION.SDK_INT >= 33) stopForeground(STOP_FOREGROUND_REMOVE)
-            else @Suppress("DEPRECATION") stopForeground(true)
-        } catch (_: Exception) {
-        }
-        stopSelf()
     }
 
     // ---------------------------------------------------------------- tiện ích
@@ -348,32 +372,73 @@ class OverlayService : Service() {
         0
     }
 
-    /** Quyền "Hiển thị trên các ứng dụng khác" đã được cấp chưa (bắt buộc để vẽ nút nổi). */
-    fun canOverlay(): Boolean = try {
-        Settings.canDrawOverlays(this)
-    } catch (_: Exception) {
-        false
-    }
-
-    /**
-     * Mọi cửa sổ nổi đều vẽ BẰNG QUYỀN "Hiển thị trên các ứng dụng khác" (TYPE_APPLICATION_OVERLAY).
-     * KHÔNG còn dùng cửa sổ Trợ năng -> chế độ Gỡ lỗi WiFi hoạt động mà không cần bật Trợ năng.
-     */
+    /** Mọi cửa sổ nổi đều vẽ bằng quyền "Hiển thị trên ứng dụng khác" (KHÔNG dùng cửa sổ của dịch vụ Trợ năng). */
     @Suppress("DEPRECATION")
     private fun overlayType(): Int =
         if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else WindowManager.LayoutParams.TYPE_PHONE
 
     /**
-     * Bật/tắt khả năng nhận chạm của một cửa sổ nổi tại chỗ. Android 12+ chặn cú chạm xuyên qua cửa sổ nổi
-     * của app khác nếu độ mờ cửa sổ > 0.8 -> cửa sổ không nhận chạm (nút số...) để alpha 0.8 cho cú chạm macro đi xuyên.
+     * Bật/tắt khả năng nhận chạm của một cửa sổ nổi tại chỗ.
+     * Android 12+ chặn cú chạm xuyên qua cửa sổ nổi của app khác nếu độ mờ CỘNG DỒN của các cửa sổ (cùng app) chồng lên
+     * điểm chạm > 0.8. Cửa sổ không nhận chạm nên để alpha ~0.79; chỗ nào có 2-3 cửa sổ chồng nhau thì [rebalanceAlpha]
+     * hạ thêm để tổng vẫn <= 0.8. Nếu Gỡ lỗi WiFi đã tắt cơ chế chặn này (block_untrusted_touches = 0) thì alpha = 1.
      */
     private fun applyTouchable(lp: WindowManager.LayoutParams, touchable: Boolean) {
         lp.flags = if (touchable) lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
         else lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-        lp.alpha = if (!touchable && Build.VERSION.SDK_INT >= 31 &&
-            lp.type != WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
-        ) 0.8f else 1f
+        lp.alpha = if (!touchable && Build.VERSION.SDK_INT >= 31 && !AdbClient.touchUnblocked(this)) PASS_ALPHA else 1f
+    }
+
+    private val PASS_ALPHA = 0.79f
+
+    /** Alpha an toàn khi có [n] cửa sổ không nhận chạm khác chồng lên cùng vùng: (1 - a)^(n+1) >= 0.2. */
+    private fun safeAlpha(n: Int): Float = when {
+        n <= 0 -> 0.79f
+        n == 1 -> 0.54f
+        n == 2 -> 0.40f
+        else -> 0.32f
+    }
+
+    /**
+     * Tính lại alpha cửa sổ + bù độ mờ nội dung cho mọi cửa sổ KHÔNG nhận chạm (nút số, nút main xuyên, tâm/vòng).
+     * Gọi sau mỗi lần đổi chế độ / bật tắt tâm vòng / đổi trạng thái Gỡ lỗi WiFi.
+     */
+    private fun rebalanceAlpha() {
+        if (!::wm.isInitialized) return
+        val free = Build.VERSION.SDK_INT < 31 || AdbClient.touchUnblocked(this)
+        val views = ArrayList<View>()
+        val lps = ArrayList<WindowManager.LayoutParams>()
+        for ((id, v) in btnViews) {
+            val lp = btnLps[id] ?: continue
+            if (v.visibility != View.VISIBLE) continue
+            if ((lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0) continue
+            views.add(v)
+            lps.add(lp)
+        }
+        val cv = crossView
+        val cl = crossLp
+        if (cv != null && cl != null) {
+            views.add(cv)
+            lps.add(cl)
+        }
+        val rects = lps.map { Rect(it.x, it.y, it.x + it.width, it.y + it.height) }
+        for (i in views.indices) {
+            var n = 0
+            for (j in views.indices) if (j != i && Rect.intersects(rects[i], rects[j])) n++
+            val a = if (free) 1f else safeAlpha(n)
+            if (lps[i].alpha != a) {
+                lps[i].alpha = a
+                updateWin(views[i], lps[i])
+            }
+            val v = views[i]
+            if (v === cv) {
+                styleCross(cv)
+            } else if (v is BtnView) {
+                val b = buttons.firstOrNull { btnViews[it.id] === v }
+                if (b != null) v.alpha = minOf(1f, viewAlpha(b) / a)
+            }
+        }
     }
 
     private fun updateWin(v: View, lp: WindowManager.LayoutParams) {
@@ -382,11 +447,6 @@ class OverlayService : Service() {
         } catch (_: Exception) {
         }
     }
-
-    // Cửa sổ KHÔNG nhận chạm khi chạy macro (nút số, nút main "xuyên", tâm / vòng) dùng chung loại cửa sổ nổi
-    // thường (không còn cửa sổ Trợ năng). Android 12+ cộng dồn độ mờ các cửa sổ nổi chồng lên điểm chạm:
-    // vượt 0.8 là CHẶN cú chạm xuống game -> applyTouchable giữ alpha cửa sổ ở 0.8 cho cú chạm xuyên qua
-    // (phần vẽ tự bù lại độ mờ để hiển thị đúng cài đặt).
 
     /** Nút main đang ở chế độ "cảm ứng xuyên" thật sự: bật cài đặt + có luồng đọc ngón thật (Gỡ lỗi WiFi đã kết nối). */
     private var lastFingersOk = 0L
@@ -405,17 +465,30 @@ class OverlayService : Service() {
         return lastFingersOk != 0L && now - lastFingersOk < 600L
     }
 
-    /** Đồng bộ lại cờ cảm ứng của các nút main "xuyên" nếu trạng thái thật sự đổi (gọi từ watchdog / ADB listener). */
+    /**
+     * Không có "động cơ chạm" nào dùng được lúc này:
+     *  - chế độ Gỡ lỗi WiFi mà chưa kết nối (mất Wi-Fi...),
+     *  - chế độ Trợ năng mà dịch vụ Trợ năng chưa bật.
+     * Khi đó macro không thể chạm, nên MỌI loại nút (main lẫn nút số) tự chuyển sang "chạm xuyên" hoàn toàn
+     * để người dùng vẫn chơi game / dùng app bình thường (bong bóng vẫn nhận chạm để mở bảng).
+     */
+    private fun engineDown(): Boolean =
+        if (Store.tapMode(this) == TAP_ADB) !AdbClient.isConnected() else MacroService.instance == null
+
+    /** Nút main có nhận chạm khi đang chạy macro không (false = cửa sổ xuyên hoàn toàn). */
+    private fun runTouchable(b: MacroButton): Boolean = b.kind == Kind.MAIN && !isPass(b) && !engineDown()
+
+    /** Đồng bộ lại cờ cảm ứng của các nút main nếu trạng thái thật sự đổi (gọi từ watchdog / ADB listener). */
     private fun syncPassFlags() {
         if (mode != Mode.RUN) return
         val mismatch = buttons.any {
-            it.kind == Kind.MAIN && it.passThru &&
-                (isPass(it) == (((btnLps[it.id]?.flags ?: 0) and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0))
+            it.kind == Kind.MAIN &&
+                (runTouchable(it) != (((btnLps[it.id]?.flags ?: 0) and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0))
         }
-        if (mismatch) applyModeUi(animate = false)
+        if (mismatch) applyModeUi(animate = false) else rebalanceAlpha()
     }
 
-    private fun buttonType(b: MacroButton): Int = builtType
+    private fun buttonType(@Suppress("UNUSED_PARAMETER") b: MacroButton): Int = builtType
 
     /** Gắn lại cửa sổ với loại mới (loại cửa sổ không đổi tại chỗ được). */
     private var retyped = false
@@ -677,7 +750,6 @@ class OverlayService : Service() {
             val lp = btnLps[b.id] ?: continue
             configureButton(b, v, lp, update = true)
         }
-        // tâm / vòng luôn dùng cửa sổ "vẽ trên app khác" (builtType), không đổi sang Trợ năng khi chạy
         if (retyped) {
             // cửa sổ vừa gắn lại nằm đè lên bảng / bong bóng -> đưa 2 thứ này lên trên lại
             retyped = false
@@ -690,6 +762,7 @@ class OverlayService : Service() {
         }
         bubble?.editing = editing
         setPanelShown(editing, animate)
+        rebalanceAlpha()
     }
 
     // ---------------------------------------------------------------- tâm ảo + vòng tròn
@@ -703,7 +776,7 @@ class OverlayService : Service() {
     private fun styleCross(v: CrosshairView) {
         // Android 12+: cửa sổ nổi không nhận chạm phải có độ mờ cửa sổ 0.8 để cú chạm đi xuyên -> bù lại độ mờ khi vẽ
         // để độ mờ hiển thị vẫn đúng như thanh trượt
-        val comp = if (Build.VERSION.SDK_INT >= 31 && builtType != WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY) 0.8f else 1f
+        val comp = (crossLp?.alpha ?: 1f).coerceIn(0.1f, 1f)
         v.showCross = Store.crossOn(this)
         v.crossPx = dp(Store.crossSize(this)).toFloat()
         v.crossAlpha = minOf(1f, Store.crossAlpha(this) / 100f / comp)
@@ -727,7 +800,7 @@ class OverlayService : Service() {
         if (!Store.crossOn(this) && !Store.ringOn(this)) return
         val v = CrosshairView(this)
         styleCross(v)
-        // dùng quyền "Hiển thị trên ứng dụng khác" (không dùng cửa sổ Trợ năng); không nhận chạm nên cú chạm đi xuyên xuống game
+        // dùng quyền "Hiển thị trên ứng dụng khác"; không nhận chạm nên cú chạm đi xuyên xuống game
         val lp = baseLp(crossSidePx(), crossSidePx(), false, builtType)
         placeCross(lp)
         crossView = v
@@ -750,16 +823,19 @@ class OverlayService : Service() {
             }
             crossView = null
             crossLp = null
+            rebalanceAlpha()
             return
         }
         if (v == null || lp == null) {
             addCrosshair()
             crossLp?.let { keepChromeOnTop(it) }
+            rebalanceAlpha()
             return
         }
         styleCross(v)
         placeCross(lp)
         updateWin(v, lp)
+        rebalanceAlpha()
     }
 
     private fun toggleRow(name: String, on: Boolean, onChange: (Boolean) -> Unit): View {
@@ -1049,7 +1125,7 @@ class OverlayService : Service() {
             val wantVis = if (hide) View.GONE else View.VISIBLE
             if (v.visibility == wantVis) continue
             v.visibility = wantVis
-            applyTouchable(lp, !hide && (mode == Mode.EDIT || (b.kind == Kind.MAIN && !isPass(b))))
+            applyTouchable(lp, !hide && (mode == Mode.EDIT || runTouchable(b)))
             updateWin(v, lp)
         }
         backdrop?.invalidate()
@@ -1062,7 +1138,7 @@ class OverlayService : Service() {
         val typeChanged = lp.type != wantType
         lp.type = wantType
         val hide = hiddenByFocus(b)
-        applyTouchable(lp, !hide && (editing || (b.kind == Kind.MAIN && !isPass(b))))
+        applyTouchable(lp, !hide && (editing || runTouchable(b)))
         v.visibility = if (hide) View.GONE else View.VISIBLE
         v.alpha = viewAlpha(b)
         v.showTag = editing
@@ -1459,7 +1535,11 @@ class OverlayService : Service() {
         Store.setTapMode(this, m)
         cancelChain()
         if (m == TAP_ADB) AdbClient.connect(applicationContext) else AdbClient.disconnect()
+        if (m == TAP_ACC && MacroService.instance == null) {
+            toast("Chế độ Trợ năng cần bật dịch vụ Macro Touch trong Cài đặt → Trợ năng (khi chưa bật, các nút tự chạm xuyên)")
+        }
         onTapModeChanged() // đổi cờ cửa sổ tại chỗ, không dựng lại giao diện
+        syncPassFlags()
         refreshPanel()
     }
 
@@ -1524,6 +1604,18 @@ class OverlayService : Service() {
         st.setPadding(dp(2), dp(6), dp(2), dp(4))
         c.addView(st)
         if (!AdbClient.supported()) return
+
+        if (Build.VERSION.SDK_INT >= 31) {
+            val tl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            tl.bottomMargin = dp(6)
+            c.addView(
+                toggleRow("Mở khóa chạm xuyên (Android 12+)", Store.unblockTouch(this)) {
+                    AdbClient.setUnblock(applicationContext, it)
+                    refreshPanel()
+                },
+                tl
+            )
+        }
 
         val btns = LinearLayout(this)
         btns.orientation = LinearLayout.HORIZONTAL
@@ -2152,6 +2244,11 @@ class OverlayService : Service() {
         startShare(ShareActivity.MODE_IMPORT)
     }
 
+    /** Dịch vụ Trợ năng vừa bật / tắt: cập nhật ngay cờ chạm xuyên của các nút (chế độ Trợ năng). */
+    fun onAccessibilityChanged() {
+        handler.post { syncPassFlags() }
+    }
+
     /** ShareActivity báo xong (thành công / huỷ / lỗi): quay lại setup, nhập xong thì mở sẵn danh sách macro đã lưu. */
     fun onShareDone(imported: Boolean) {
         if (shareReturnEdit && mode == Mode.RUN) {
@@ -2299,38 +2396,46 @@ class OverlayService : Service() {
         val cy = Math.round(loc[1] + v.height / 2f)
 
         if (Store.tapMode(this) == TAP_ADB) {
-            // Chạm qua Gỡ lỗi WiFi (quyền shell, hệ thống coi là chạm thật): báo xong thì mới đi tiếp.
-            // Kèm hướng xoay + kích thước màn hình để "ngón tay phụ" đổi đúng toạ độ (kể cả khi game chạy ngang).
+            // Chế độ Gỡ lỗi WiFi: CHỈ dùng ADB, tuyệt đối không đụng tới Trợ năng.
+            // Kèm hướng xoay + kích thước màn hình để "ngón tay phụ" đổi đúng toạ độ sang tấm cảm ứng (kể cả khi game chạy ngang).
             val (sw, sh) = screenSize()
             val ok = AdbClient.tap(cx, cy, displayRotation(), sw, sh) { handler.post { finish() } }
             if (ok) {
                 v.flashFx()
-                // đề phòng shell không báo lại: tự đi tiếp sau 0,2 giây (lệnh vẫn đi tuần tự nên không đảo thứ tự)
+                // đề phòng shell không báo lại: tự đi tiếp sau 0,2 giây (cú chạm thật chỉ ~16ms; lệnh vẫn đi tuần tự nên không bị đảo thứ tự)
                 handler.postAtTime({ finish() }, chainToken, SystemClock.uptimeMillis() + 200)
                 return
             }
-            // Mất Wi-Fi / chưa kết nối: KHÔNG tự đổi sang Trợ năng (giữ đúng nguyên tắc
-            // "Gỡ lỗi WiFi = không trợ năng"). Báo rõ cho người dùng, bỏ qua cú chạm này;
-            // app tự nối lại khi có Wi-Fi (watchdog -> AdbClient.tick).
-            val now = SystemClock.uptimeMillis()
-            if (now - lastAdbWarn > 3000) {
-                lastAdbWarn = now
-                toast("Gỡ lỗi WiFi chưa kết nối (mất Wi-Fi?) · cú chạm bị bỏ qua — KHÔNG dùng Trợ năng thay thế")
-            }
-            finish()
+            // Mất kết nối ADB (vd. mất Wi-Fi): không chạm được -> dừng chuỗi, mọi nút tự chuyển sang chạm xuyên.
+            warnEngine("Gỡ lỗi WiFi chưa kết nối · các nút đang chạm xuyên")
+            cancelChain()
+            syncPassFlags()
             return
         }
 
-        // Chế độ Trợ năng: dùng đúng quyền Trợ năng (dispatchGesture) của dịch vụ Trợ năng.
-        val ok = MacroService.dispatchTap(cx.toFloat(), cy.toFloat(), handler) { handler.post { finish() } }
+        // Chế độ Trợ năng: dùng dịch vụ Trợ năng để bắn cú chạm.
+        val acc = MacroService.instance
+        if (acc == null) {
+            warnEngine("Dịch vụ Trợ năng chưa bật · các nút đang chạm xuyên")
+            cancelChain()
+            syncPassFlags()
+            return
+        }
+        val ok = acc.tap(cx.toFloat(), cy.toFloat(), handler) { finish() }
         v.flashFx()
         if (!ok) {
-            val now = SystemClock.uptimeMillis()
-            if (now - lastAdbWarn > 3000) {
-                lastAdbWarn = now
-                toast("Dịch vụ Trợ năng chưa bật · bật trong Cài đặt → Trợ năng, hoặc đổi sang Gỡ lỗi WiFi")
-            }
             finish()
+        } else {
+            // đề phòng hệ thống không gọi callback: tự đi tiếp sau 300ms để chuỗi không bị kẹt
+            handler.postAtTime({ finish() }, chainToken, SystemClock.uptimeMillis() + 300)
+        }
+    }
+
+    private fun warnEngine(msg: String) {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastAdbWarn > 3000) {
+            lastAdbWarn = now
+            toast(msg)
         }
     }
 }

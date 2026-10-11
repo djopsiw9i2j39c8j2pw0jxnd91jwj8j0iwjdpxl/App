@@ -110,6 +110,87 @@ object AdbClient {
     /** Có nhận được vị trí ngón thật từ GhostTouch không (cần cho nút main "cảm ứng xuyên"). */
     fun fingersAvailable(): Boolean = state == State.CONNECTED && ghostReady
 
+    // ------------------------------------------------------------------ mở khóa chạm xuyên (Android 12+)
+
+    /** Context ứng dụng (để đọc / ghi Store từ luồng nền). */
+    @Volatile
+    private var appCtx: Context? = null
+
+    /** true = cơ chế chặn chạm xuyên (block_untrusted_touches) đã được tắt bằng quyền shell. */
+    @Volatile
+    private var unblockApplied = false
+
+    private const val BUT = "block_untrusted_touches"
+
+    /**
+     * Cú chạm xuyên qua cửa sổ nổi KHÔNG còn bị Android 12+ chặn (đã tắt cơ chế chặn bằng quyền shell của Gỡ lỗi WiFi).
+     * Khi true, cửa sổ không nhận chạm có thể để độ mờ 100% mà vẫn xuyên hoàn toàn.
+     */
+    fun touchUnblocked(ctx: Context): Boolean =
+        Build.VERSION.SDK_INT >= 31 && state == State.CONNECTED && unblockApplied && Store.unblockTouch(ctx.applicationContext)
+
+    /** Áp dụng / khôi phục "mở khóa chạm xuyên" theo cài đặt hiện tại (chỉ khi đang kết nối Gỡ lỗi WiFi). */
+    fun refreshUnblock(ctx: Context) {
+        val app = ctx.applicationContext
+        if (Build.VERSION.SDK_INT < 31 || state != State.CONNECTED) return
+        if (Store.unblockTouch(app)) applyUnblock(app) else restoreUnblock(app)
+    }
+
+    /** Bật / tắt công tắc "Mở khóa chạm xuyên". */
+    fun setUnblock(ctx: Context, on: Boolean) {
+        val app = ctx.applicationContext
+        Store.setUnblockTouch(app, on)
+        refreshUnblock(app)
+        if (!on) unblockApplied = false
+        notifyUi()
+    }
+
+    /** Lệnh khôi phục giá trị gốc của hệ thống (null = chưa từng đổi, không cần khôi phục). */
+    private fun restoreCmd(app: Context): String? {
+        val orig = Store.butOrig(app) ?: return null
+        if (orig == "null") return "settings delete global $BUT"
+        val n = orig.filter { it.isDigit() }.ifEmpty { "2" }
+        return "settings put global $BUT $n"
+    }
+
+    private fun applyUnblock(app: Context) {
+        val o = outS
+        if (state != State.CONNECTED || o == null) return
+        appCtx = app
+        // __MS''ORIG / __MS''BUT: dấu '' để dòng lệnh bị shell "dội" lại không chứa chuỗi đánh dấu thật
+        val cmd = "o=\$(settings get global $BUT); echo __MS''ORIG_\$o; " +
+                "settings put global $BUT 0; echo __MS''BUT_\$(settings get global $BUT)\n"
+        io.execute {
+            try {
+                o.write(cmd.toByteArray())
+                o.flush()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun restoreUnblock(app: Context) {
+        unblockApplied = false
+        val o = outS
+        val c = restoreCmd(app) ?: return
+        if (state != State.CONNECTED || o == null) return
+        io.execute {
+            try {
+                o.write("$c\n".toByteArray())
+                o.flush()
+                Store.setButOrig(app, null) // đã khôi phục xong
+            } catch (_: Throwable) {
+                // giữ lại giá trị gốc, lần kết nối / ngắt sau sẽ khôi phục tiếp
+            }
+        }
+    }
+
+    /** Shell báo giá trị gốc của block_untrusted_touches: chỉ nhớ khi chưa có giá trị gốc nào đang chờ khôi phục. */
+    private fun onButOrig(v: String) {
+        val app = appCtx ?: return
+        if (Store.butOrig(app) == null) Store.setButOrig(app, v)
+    }
+
     fun supported(): Boolean = Build.VERSION.SDK_INT >= 30
     fun isConnected(): Boolean = state == State.CONNECTED
 
@@ -308,8 +389,7 @@ object AdbClient {
             notifyUi()
             return
         }
-        // Chi connect khi nguoi dung chon mode "Go loi WiFi" (TAP_ADB).
-        // Mode "Tro nang" khong duoc dinh ADB / GhostTouch (GhostTouch gianh cam ung cua may).
+        // Chế độ Trợ năng tuyệt đối không được dính ADB / GhostTouch (nó giành cảm ứng của máy)
         if (Store.tapMode(app) != TAP_ADB) return
         synchronized(this) {
             if (state != State.OFF) return
@@ -339,6 +419,9 @@ object AdbClient {
                 val t = Thread { readLoop(st, ins) }
                 t.isDaemon = true
                 t.start()
+                // Mở khóa chạm xuyên (Android 12+) bằng quyền shell, nếu người dùng để bật
+                appCtx = app
+                refreshUnblock(app)
                 // Đã chạm được bằng input tap rồi; giờ thử bật "ngón tay phụ" (nếu máy cho phép thì tự dùng).
                 startGhost(app, m)
             } catch (t: Throwable) {
@@ -622,9 +705,22 @@ object AdbClient {
         mgr = null // lần sau dựng lại (khoá đã lưu nên không phải ghép cặp lại)
         stream = null
         outS = null
-        // đóng theo thứ tự (ngón phụ trước, rồi shell, rồi kết nối) và KHÔNG chặn luồng chính
+        unblockApplied = false
+        val app = appCtx
+        // đóng theo thứ tự (ngón phụ trước, khôi phục chặn chạm xuyên, rồi shell, rồi kết nối) và KHÔNG chặn luồng chính
         val t = Thread {
             closeGhostIo(go, gst)
+            val rc = if (app != null && o != null && Build.VERSION.SDK_INT >= 31) restoreCmd(app) else null
+            if (rc != null) {
+                try {
+                    o!!.write("$rc\n".toByteArray())
+                    o.flush()
+                    Thread.sleep(300) // chờ shell chạy xong lệnh khôi phục rồi mới đóng
+                    Store.setButOrig(app!!, null)
+                } catch (_: Throwable) {
+                    // mất kết nối rồi: giữ giá trị gốc, lần kết nối sau sẽ khôi phục
+                }
+            }
             try {
                 o?.close()
             } catch (_: Throwable) {
@@ -659,6 +755,19 @@ object AdbClient {
                 if (i >= 0) {
                     val n = line.substring(i + 9).takeWhile { it.isDigit() }.toIntOrNull()
                     if (n != null) acks.remove(n)?.invoke()
+                }
+                val j = line.indexOf("__MSORIG_")
+                if (j >= 0) {
+                    val v = line.substring(j + 9).takeWhile { !it.isWhitespace() }
+                    if (v.isNotEmpty()) onButOrig(v)
+                }
+                val k = line.indexOf("__MSBUT_")
+                if (k >= 0) {
+                    val v = line.substring(k + 8).takeWhile { !it.isWhitespace() }
+                    if (v.isNotEmpty()) {
+                        unblockApplied = (v == "0")
+                        notifyUi()
+                    }
                 }
             }
         } catch (_: Throwable) {

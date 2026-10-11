@@ -1,6 +1,7 @@
 package com.macrosniper.app
 
 import android.content.Context
+import android.os.Build
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -48,7 +49,8 @@ object Store {
         p(ctx).edit().putBoolean("running", v).apply()
     }
 
-    fun tapMode(ctx: Context): Int = p(ctx).getInt("tapMode", TAP_ACC)
+    // Máy Android 11+ mặc định dùng Gỡ lỗi WiFi (không cần Trợ năng); máy cũ hơn chỉ có Trợ năng.
+    fun tapMode(ctx: Context): Int = p(ctx).getInt("tapMode", if (Build.VERSION.SDK_INT >= 30) TAP_ADB else TAP_ACC)
 
     fun setTapMode(ctx: Context, m: Int) {
         p(ctx).edit().putInt("tapMode", m).apply()
@@ -59,6 +61,26 @@ object Store {
 
     fun setEarlyTake(ctx: Context, v: Boolean) {
         p(ctx).edit().putBoolean("earlyTake", v).apply()
+    }
+
+    /**
+     * Mở khóa chạm xuyên (Android 12+, chỉ chế độ Gỡ lỗi WiFi): dùng quyền shell của ADB tắt cơ chế chặn cú chạm xuyên
+     * qua cửa sổ nổi (block_untrusted_touches) để nút số / tâm / vòng / nút main "xuyên" xuống game 100%, không bị chặn.
+     * Mặc định bật. Giá trị gốc của hệ thống được nhớ lại và tự khôi phục khi ngắt Gỡ lỗi WiFi.
+     */
+    fun unblockTouch(ctx: Context): Boolean = p(ctx).getBoolean("unblockTouch", true)
+
+    fun setUnblockTouch(ctx: Context, v: Boolean) {
+        p(ctx).edit().putBoolean("unblockTouch", v).apply()
+    }
+
+    /** Giá trị gốc của block_untrusted_touches trước khi app đổi (null = chưa đổi / đã khôi phục; "null" = hệ thống chưa đặt giá trị). */
+    fun butOrig(ctx: Context): String? = p(ctx).getString("butOrig", null)
+
+    fun setButOrig(ctx: Context, v: String?) {
+        val e = p(ctx).edit()
+        if (v == null) e.remove("butOrig") else e.putString("butOrig", v)
+        e.apply()
     }
 
     // ---- Tâm ảo (crosshair) + vòng tròn quanh tâm: cài đặt chung, không gắn với từng macro
