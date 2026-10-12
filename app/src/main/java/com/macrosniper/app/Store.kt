@@ -97,6 +97,21 @@ object Store {
     fun setCrossOn(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("crossOn", v).apply()
     fun setCrossSize(ctx: Context, v: Int) = p(ctx).edit().putInt("crossSize", v).apply()
     fun setCrossAlpha(ctx: Context, v: Int) = p(ctx).edit().putInt("crossAlpha", v).apply()
+    // ---- cụm nút vuốt tâm (vị trí lưu theo ‰ màn hình để đúng cả khi xoay ngang/dọc)
+    fun padOn(ctx: Context) = p(ctx).getBoolean("padOn", false)
+    fun setPadOn(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("padOn", v).apply()
+    fun padInt(ctx: Context, key: String, def: Int) = p(ctx).getInt("pad_$key", def)
+    fun setPadInt(ctx: Context, key: String, v: Int) = p(ctx).edit().putInt("pad_$key", v).apply()
+    fun padCx(ctx: Context) = padInt(ctx, "cx", 160)    // tâm cụm nút (‰ chiều rộng)
+    fun padCy(ctx: Context) = padInt(ctx, "cy", 650)    // (‰ chiều cao)
+    fun padAx(ctx: Context) = padInt(ctx, "ax", 780)    // điểm bắt đầu vuốt (vùng xoay camera)
+    fun padAy(ctx: Context) = padInt(ctx, "ay", 500)
+    fun padSize(ctx: Context) = padInt(ctx, "size", 150)   // dp
+    fun padAlpha(ctx: Context) = padInt(ctx, "alpha", 70)  // %
+    fun padDirs(ctx: Context) = padInt(ctx, "dirs", 8)     // 4..8 hướng
+    fun padSpeed(ctx: Context) = padInt(ctx, "speed", 250) // dp / giây
+    fun padReach(ctx: Context) = padInt(ctx, "reach", 120) // dp: vuốt xa nhất trước khi đặt lại về điểm bắt đầu
+
     fun setRingOn(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("ringOn", v).apply()
     fun setRingSize(ctx: Context, v: Int) = p(ctx).edit().putInt("ringSize", v).apply()
     fun setRingStroke(ctx: Context, v: Int) = p(ctx).edit().putInt("ringStroke", v).apply()

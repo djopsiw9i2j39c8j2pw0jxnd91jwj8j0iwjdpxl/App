@@ -555,7 +555,7 @@ class OverlayService : Service() {
             it.kind == Kind.MAIN &&
                 (runTouchable(it) != (((btnLps[it.id]?.flags ?: 0) and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0))
         }
-        if (mismatch) applyModeUi(animate = false) else rebalanceAlpha()
+        if (mismatch || padMismatch()) applyModeUi(animate = false) else rebalanceAlpha()
     }
 
     private fun buttonType(@Suppress("UNUSED_PARAMETER") b: MacroButton): Int = builtType
@@ -614,6 +614,7 @@ class OverlayService : Service() {
 
     private fun removeAll() {
         if (!::wm.isInitialized) return
+        padStopAll()
         setPanelFocusable(false)
         for ((v, _) in live) {
             try {
@@ -630,6 +631,10 @@ class OverlayService : Service() {
         bubbleLp = null
         crossView = null
         crossLp = null
+        padView = null
+        padLp = null
+        anchorView = null
+        anchorLp = null
         panelRoot = null
         panelLp = null
         panelContent = null
@@ -805,6 +810,7 @@ class OverlayService : Service() {
         addBackdrop()
         addCrosshair()
         for (b in buttons) addButton(b, sw, sh)
+        addPad()
         addPanel(sw, sh)
         addBubble(sw, sh)
         applyModeUi(animate = false)
@@ -831,6 +837,7 @@ class OverlayService : Service() {
             if (bv != null && bl != null) refront(bv, bl)
         }
         bubble?.editing = editing
+        configurePad()
         setPanelShown(editing, animate)
         rebalanceAlpha()
     }
@@ -906,6 +913,325 @@ class OverlayService : Service() {
         placeCross(lp)
         updateWin(v, lp)
         rebalanceAlpha()
+    }
+
+    // ---------------------------------------------------------------- cụm nút vuốt tâm
+
+    private var padView: SwipePadView? = null
+    private var padLp: WindowManager.LayoutParams? = null
+    private var anchorView: AnchorView? = null
+    private var anchorLp: WindowManager.LayoutParams? = null
+
+    private var padDir = -1          // nút hướng đang giữ (-1 = không)
+    private var padEngineOn = false  // đang có 1 ngón vuốt đặt xuống
+    private var padX = 0f
+    private var padY = 0f
+    private var padLastT = 0L
+
+    private val padTick = object : Runnable {
+        override fun run() {
+            padStep()
+            if (padDir >= 0 && padEngineOn) handler.postDelayed(this, 16)
+        }
+    }
+
+    private fun placePad(lp: WindowManager.LayoutParams, sw: Int, sh: Int) {
+        val size = dp(Store.padSize(this))
+        lp.width = size
+        lp.height = size
+        lp.x = (Store.padCx(this) * sw / 1000 - size / 2).coerceIn(0, maxOf(0, sw - size))
+        lp.y = (Store.padCy(this) * sh / 1000 - size / 2).coerceIn(0, maxOf(0, sh - size))
+    }
+
+    private fun placeAnchor(lp: WindowManager.LayoutParams, sw: Int, sh: Int) {
+        lp.x = (Store.padAx(this) * sw / 1000 - lp.width / 2).coerceIn(0, maxOf(0, sw - lp.width))
+        lp.y = (Store.padAy(this) * sh / 1000 - lp.height / 2).coerceIn(0, maxOf(0, sh - lp.height))
+    }
+
+    private fun addPad() {
+        if (!Store.padOn(this)) return
+        val (sw, sh) = screenSize()
+        val v = SwipePadView(this)
+        val lp = baseLp(dp(Store.padSize(this)), dp(Store.padSize(this)), true, builtType)
+        placePad(lp, sw, sh)
+        padView = v
+        padLp = lp
+        addOverlay(v, lp)
+        val av = AnchorView(this)
+        val alp = baseLp(dp(56), dp(56), true, builtType)
+        placeAnchor(alp, sw, sh)
+        anchorView = av
+        anchorLp = alp
+        addOverlay(av, alp)
+        configurePad()
+    }
+
+    private fun removePadWindows() {
+        padStopAll()
+        for (v in listOf<View?>(padView, anchorView)) {
+            if (v == null) continue
+            live.removeAll { it.first === v }
+            try {
+                wm.removeViewImmediate(v)
+            } catch (_: Exception) {
+            }
+        }
+        padView = null
+        padLp = null
+        anchorView = null
+        anchorLp = null
+    }
+
+    /** Cài đặt cụm vuốt đổi: gắn / gỡ / cập nhật đúng các cửa sổ của cụm, không đụng phần còn lại. */
+    private fun updatePad() {
+        if (!Store.padOn(this)) {
+            removePadWindows()
+            return
+        }
+        val v = padView
+        val lp = padLp
+        if (v == null || lp == null) {
+            addPad()
+            // 2 cửa sổ mới nằm đè lên bảng / bong bóng -> đưa 2 thứ này lên trên lại
+            val pr = panelRoot
+            val pl = panelLp
+            if (pr != null && pl != null) refront(pr, pl)
+            val bv = bubble
+            val bl = bubbleLp
+            if (bv != null && bl != null) refront(bv, bl)
+            return
+        }
+        val (sw, sh) = screenSize()
+        placePad(lp, sw, sh)
+        configurePad()
+    }
+
+    /** Đồng bộ kiểu hiển thị + cảm ứng của cụm vuốt theo chế độ hiện tại (setup: kéo thả · chạy: vuốt). */
+    private fun configurePad() {
+        val v = padView ?: return
+        val lp = padLp ?: return
+        val editing = mode == Mode.EDIT
+        val (sw, sh) = screenSize()
+        // Không có động cơ chạm: cụm vuốt không làm được gì -> cho chạm xuyên để người dùng vẫn chơi bình thường
+        applyTouchable(lp, editing || !engineDown())
+        v.dirs = Store.padDirs(this).coerceIn(4, 8)
+        v.editing = editing
+        v.active = -1
+        v.alpha = minOf(1f, Store.padAlpha(this) / 100f / lp.alpha.coerceIn(0.1f, 1f))
+        v.visibility = View.VISIBLE
+        v.invalidate()
+        padStopAll()
+        if (editing) {
+            v.setOnTouchListener(
+                DragListener(
+                    lp = lp,
+                    wm = wm,
+                    slop = dp(6),
+                    limit = {
+                        val s = screenSize()
+                        Pair(s.first - lp.width, s.second - lp.height)
+                    },
+                    onMove = {},
+                    onTap = {},
+                    onDragEnd = {
+                        val s = screenSize()
+                        Store.setPadInt(this, "cx", (lp.x + lp.width / 2) * 1000 / maxOf(1, s.first))
+                        Store.setPadInt(this, "cy", (lp.y + lp.height / 2) * 1000 / maxOf(1, s.second))
+                    }
+                )
+            )
+        } else {
+            v.setOnTouchListener { _, e ->
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> padSetDir(v.hit(e.x, e.y))
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> padSetDir(-1)
+                }
+                true
+            }
+        }
+        updateWin(v, lp)
+
+        val av = anchorView
+        val alp = anchorLp
+        if (av != null && alp != null) {
+            applyTouchable(alp, editing)
+            placeAnchor(alp, sw, sh)
+            av.visibility = if (editing) View.VISIBLE else View.GONE
+            if (editing) {
+                av.setOnTouchListener(
+                    DragListener(
+                        lp = alp,
+                        wm = wm,
+                        slop = dp(6),
+                        limit = {
+                            val s = screenSize()
+                            Pair(s.first - alp.width, s.second - alp.height)
+                        },
+                        onMove = {},
+                        onTap = {},
+                        onDragEnd = {
+                            val s = screenSize()
+                            Store.setPadInt(this, "ax", (alp.x + alp.width / 2) * 1000 / maxOf(1, s.first))
+                            Store.setPadInt(this, "ay", (alp.y + alp.height / 2) * 1000 / maxOf(1, s.second))
+                        }
+                    )
+                )
+            } else {
+                av.setOnTouchListener(null)
+            }
+            updateWin(av, alp)
+        }
+    }
+
+    private fun padSetDir(idx: Int) {
+        if (idx == padDir) return
+        val was = padDir
+        padDir = idx
+        padView?.active = idx
+        padView?.invalidate()
+        if (idx < 0) {
+            padStopAll()
+            return
+        }
+        if (was < 0 || !padEngineOn) {
+            if (!padBegin()) {
+                padStopAll()
+                return
+            }
+            padLastT = SystemClock.uptimeMillis()
+            handler.removeCallbacks(padTick)
+            handler.post(padTick)
+        }
+    }
+
+    /** Đặt ngón vuốt xuống ở điểm bắt đầu. false = động cơ chạm chưa sẵn sàng (đã báo người dùng). */
+    private fun padBegin(): Boolean {
+        val (sw, sh) = screenSize()
+        val ax = Store.padAx(this) * sw / 1000f
+        val ay = Store.padAy(this) * sh / 1000f
+        padX = ax
+        padY = ay
+        val ok: Boolean
+        if (Store.tapMode(this) == TAP_ADB) {
+            if (!AdbClient.canDrag()) {
+                warnEngine("Vuốt tâm cần Gỡ lỗi WiFi đã kết nối (ngón phụ sẵn sàng)")
+                ok = false
+            } else {
+                ok = AdbClient.dragBegin(Math.round(ax), Math.round(ay), displayRotation(), sw, sh)
+            }
+        } else {
+            val acc = MacroService.instance
+            if (acc == null) {
+                warnEngine("Dịch vụ Trợ năng chưa bật · cụm vuốt tâm không hoạt động")
+                ok = false
+            } else if (!acc.canDrag()) {
+                warnEngine("Vuốt tâm bằng Trợ năng cần Android 8.0 trở lên")
+                ok = false
+            } else {
+                ok = acc.dragBegin(ax, ay, handler)
+            }
+        }
+        padEngineOn = ok
+        return ok
+    }
+
+    private fun padEnd() {
+        padEngineOn = false
+        if (Store.tapMode(this) == TAP_ADB) AdbClient.dragEnd() else MacroService.instance?.dragEnd()
+    }
+
+    /** Nhả ngón vuốt + dừng bộ đếm. An toàn khi gọi nhiều lần. */
+    private fun padStopAll() {
+        padDir = -1
+        handler.removeCallbacks(padTick)
+        if (padEngineOn) padEnd()
+        val v = padView
+        if (v != null && v.active != -1) {
+            v.active = -1
+            v.invalidate()
+        }
+    }
+
+    /** Mỗi ~16ms: dời ngón vuốt thêm một đoạn theo hướng đang giữ; chạm biên / quá tầm thì nhấc và đặt lại ở điểm bắt đầu. */
+    private fun padStep() {
+        if (!padEngineOn || padDir < 0) return
+        val pv = padView
+        if (mode != Mode.RUN || pv == null || !pv.isAttachedToWindow) {
+            padStopAll()
+            return
+        }
+        val now = SystemClock.uptimeMillis()
+        val dt = ((now - padLastT) / 1000f).coerceIn(0f, 0.05f)
+        padLastT = now
+        val step = dp(Store.padSpeed(this)) * dt
+        val a = pv.angleOf(padDir)
+        padX += (Math.sin(a) * step).toFloat()
+        padY -= (Math.cos(a) * step).toFloat()
+        val (sw, sh) = screenSize()
+        val ax = Store.padAx(this) * sw / 1000f
+        val ay = Store.padAy(this) * sh / 1000f
+        val reach = dp(Store.padReach(this)).toFloat()
+        val m = dp(8).toFloat()
+        val tooFar = Math.hypot((padX - ax).toDouble(), (padY - ay).toDouble()) > reach ||
+            padX < m || padX > sw - m || padY < m || padY > sh - m
+        val accDead = Store.tapMode(this) != TAP_ADB && MacroService.instance?.dragAlive() != true
+        if (tooFar || accDead) {
+            padEnd()
+            if (!padBegin()) padStopAll()
+            return
+        }
+        if (Store.tapMode(this) == TAP_ADB) {
+            if (!AdbClient.dragMove(Math.round(padX), Math.round(padY))) {
+                warnEngine("Mất ngón phụ · cụm vuốt tâm tạm dừng")
+                padStopAll()
+            }
+        } else {
+            MacroService.instance?.dragMove(padX, padY)
+        }
+    }
+
+    private fun padMismatch(): Boolean {
+        val lp = padLp ?: return false
+        val want = mode == Mode.EDIT || !engineDown()
+        return want != ((lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0)
+    }
+
+    private fun buildPadSection(c: LinearLayout) {
+        val lpRow = {
+            val l = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            l.topMargin = dp(6)
+            l
+        }
+        c.addView(toggleRow("Cụm vuốt tâm", Store.padOn(this)) {
+            Store.setPadOn(this, it)
+            updatePad()
+            refreshPanel()
+        }, lpRow())
+        if (!Store.padOn(this)) return
+        val hint = label(
+            "Kéo cụm nút tròn tới chỗ ngón cái; kéo chấm \"VUỐT\" tới vùng xoay camera của game. " +
+                "Khi chạy: giữ ngón vào nút hướng nào thì tâm vuốt mượt theo hướng đó, trượt sang nút khác để đổi hướng.",
+            11f, Theme.MUTED
+        )
+        c.addView(hint, lpRow())
+        c.addView(sliderRow("Số hướng", 4, 8, Store.padDirs(this), { "$it" }, stepKey = "pad_dirs") { v, _ ->
+            Store.setPadInt(this, "dirs", v)
+            updatePad()
+        })
+        c.addView(sliderRow("Cỡ cụm nút", 80, 320, Store.padSize(this), { "${it}dp" }, stepKey = "pad_size") { v, _ ->
+            Store.setPadInt(this, "size", v)
+            updatePad()
+        })
+        c.addView(sliderRow("Độ mờ cụm", 10, 100, Store.padAlpha(this), { "$it%" }, stepKey = "pad_alpha") { v, _ ->
+            Store.setPadInt(this, "alpha", v)
+            updatePad()
+        })
+        c.addView(sliderRow("Tốc độ vuốt", 20, 1500, Store.padSpeed(this), { "${it}dp/s" }, stepKey = "pad_speed") { v, _ ->
+            Store.setPadInt(this, "speed", v)
+        })
+        c.addView(sliderRow("Tầm vuốt tối đa", 30, 400, Store.padReach(this), { "${it}dp" }, stepKey = "pad_reach") { v, _ ->
+            Store.setPadInt(this, "reach", v)
+        })
     }
 
     private fun toggleRow(name: String, on: Boolean, onChange: (Boolean) -> Unit): View {
@@ -1776,6 +2102,8 @@ class OverlayService : Service() {
         buildModeSection(c)
         c.addView(View(this), LinearLayout.LayoutParams(1, dp(8)))
         buildCrossSection(c)
+        c.addView(View(this), LinearLayout.LayoutParams(1, dp(8)))
+        buildPadSection(c)
         c.addView(View(this), LinearLayout.LayoutParams(1, dp(8)))
 
         val r1 = LinearLayout(this)

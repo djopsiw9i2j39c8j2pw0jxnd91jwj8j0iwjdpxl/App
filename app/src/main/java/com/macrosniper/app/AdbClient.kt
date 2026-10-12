@@ -836,4 +836,32 @@ object AdbClient {
         }
         return true
     }
+
+    // ------------------------------------------------------------------ vuốt tâm liên tục (cụm nút vuốt)
+
+    /** Có thể vuốt liên tục lúc này không (cần ngón phụ sẵn sàng). */
+    fun canDrag(): Boolean = state == State.CONNECTED && ghostReady && ghostOut != null
+
+    private fun ghostLine(line: String): Boolean {
+        val g = ghostOut
+        if (state != State.CONNECTED || !ghostReady || g == null) return false
+        io.execute {
+            try {
+                g.write(line.toByteArray())
+                g.flush()
+            } catch (_: Throwable) {
+                ghostReady = false
+                ghostNote = "ngón phụ lỗi, vuốt tâm tạm dừng"
+                notifyUi()
+            }
+        }
+        return true
+    }
+
+    /** Đặt ngón vuốt xuống (x, y) px. [rot]/[w]/[h]: hướng + kích thước màn hình hiện tại. */
+    fun dragBegin(x: Int, y: Int, rot: Int, w: Int, h: Int): Boolean = ghostLine("B $x $y $rot $w $h\n")
+
+    fun dragMove(x: Int, y: Int): Boolean = ghostLine("V $x $y\n")
+
+    fun dragEnd(): Boolean = ghostLine("N\n")
 }
