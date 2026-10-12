@@ -21,7 +21,7 @@ class MacroService : AccessibilityService() {
         var instance: MacroService? = null
 
         /** Thời gian đè xuống của mỗi cú chạm (ms). */
-        private const val TAP_MS = 10L
+        private const val TAP_MS = 30L
     }
 
     override fun onServiceConnected() {
@@ -54,18 +54,18 @@ class MacroService : AccessibilityService() {
      * Bắn 1 cú chạm tại (x, y) px. [done] được gọi khi cử chỉ hoàn tất hoặc bị huỷ (để chuỗi đi tuần tự).
      * Trả về false nếu hệ thống từ chối cử chỉ.
      */
-    fun tap(x: Float, y: Float, handler: Handler, done: () -> Unit): Boolean {
+    fun tap(x: Float, y: Float, handler: Handler, done: (Boolean) -> Unit): Boolean {
         val path = Path()
         path.moveTo(x, y)
         val stroke = GestureDescription.StrokeDescription(path, 0L, TAP_MS)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
         val cb = object : AccessibilityService.GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
-                done()
+                done(true)
             }
 
             override fun onCancelled(gestureDescription: GestureDescription?) {
-                done()
+                done(false)
             }
         }
         return try {

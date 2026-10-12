@@ -527,6 +527,15 @@ object AdbClient {
     }
 
     /** Gọi định kỳ: rớt mạng rồi có lại thì tự nối lại (nếu người dùng đang muốn dùng ADB). */
+    /** Kết nối đã chết mà hệ thống chưa báo (mất Wi-Fi, ngủ máy...): đóng, báo "chưa kết nối" và để [tick] tự nối lại. */
+    fun markLost(reason: String) {
+        if (state == State.OFF) return
+        closeQuietly()
+        lastError = reason
+        state = State.OFF
+        notifyUi()
+    }
+
     fun tick(ctx: Context) {
         if (wantUp && state == State.OFF && SystemClock.uptimeMillis() - lastTry > 15_000L) connect(ctx)
     }

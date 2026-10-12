@@ -198,6 +198,7 @@ class OverlayService : Service() {
         density = resources.displayMetrics.density
         handler.removeCallbacks(watchdog)
         handler.postDelayed(watchdog, 1000)
+        startNetWatch()
         AdbClient.listeners.remove(adbListener)
         AdbClient.listeners.add(adbListener)
         AdbClient.fingerListener = { pts -> handler.post { onFingers(pts) } }
@@ -294,7 +295,70 @@ class OverlayService : Service() {
         super.onDestroy()
     }
 
+    // ---- theo dõi mạng: mất Wi-Fi thì báo ngay (không để người dùng tưởng vẫn còn kết nối)
+    private var netCb: android.net.ConnectivityManager.NetworkCallback? = null
+    private var netWasLost = false
+
+    private fun startNetWatch() {
+        if (netCb != null) return
+        try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+            val cb = object : android.net.ConnectivityManager.NetworkCallback() {
+                override fun onLost(network: android.net.Network) {
+                    handler.post { onNetLost() }
+                }
+
+                override fun onAvailable(network: android.net.Network) {
+                    handler.post { onNetBack() }
+                }
+            }
+            cm.registerDefaultNetworkCallback(cb)
+            netCb = cb
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun stopNetWatch() {
+        val cb = netCb ?: return
+        netCb = null
+        try {
+            (getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager).unregisterNetworkCallback(cb)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun onNetLost() {
+        netWasLost = true
+        if (Store.tapMode(this) != TAP_ADB || !Store.isRunning(this)) return
+        AdbClient.markLost("mất Wi-Fi")
+        buzz()
+        Toast.makeText(this, "⚠ MẤT WI-FI · Gỡ lỗi WiFi đã ngắt, macro KHÔNG chạm được", Toast.LENGTH_LONG).show()
+        cancelChain()
+        syncPassFlags()
+    }
+
+    private fun onNetBack() {
+        if (!netWasLost) return
+        netWasLost = false
+        if (Store.tapMode(this) != TAP_ADB || !Store.isRunning(this)) return
+        Toast.makeText(this, "Đã có mạng lại · đang nối lại Gỡ lỗi WiFi…", Toast.LENGTH_LONG).show()
+        try {
+            AdbClient.connect(applicationContext)
+        } catch (_: Exception) {
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun buzz() {
+        try {
+            val vb = getSystemService(Context.VIBRATOR_SERVICE) as android.os.Vibrator
+            vb.vibrate(longArrayOf(0, 120, 80, 120), -1)
+        } catch (_: Exception) {
+        }
+    }
+
     private fun shutdown() {
+        stopNetWatch()
         AdbClient.fingerListener = null
         AdbClient.listeners.remove(adbListener)
         AdbClient.disconnect()
@@ -2345,6 +2409,8 @@ class OverlayService : Service() {
         stepChain(chainGen, ids, 0)
     }
 
+    private var adbNoAck = 0
+    private var accFail = 0
     private var lastTapX = -100000
     private var lastTapY = -100000
     private var lastTapAt = 0L
@@ -2422,11 +2488,31 @@ class OverlayService : Service() {
             // Chế độ Gỡ lỗi WiFi: CHỈ dùng ADB, tuyệt đối không đụng tới Trợ năng.
             // Kèm hướng xoay + kích thước màn hình để "ngón tay phụ" đổi đúng toạ độ sang tấm cảm ứng (kể cả khi game chạy ngang).
             val (sw, sh) = screenSize()
-            val ok = AdbClient.tap(cx, cy, displayRotation(), sw, sh) { handler.post { finish() } }
+            var acked = false
+            val ok = AdbClient.tap(cx, cy, displayRotation(), sw, sh) {
+                handler.post {
+                    acked = true
+                    adbNoAck = 0
+                    finish()
+                }
+            }
             if (ok) {
                 v.flashFx()
                 // đề phòng shell không báo lại: tự đi tiếp sau 0,2 giây (cú chạm thật chỉ ~16ms; lệnh vẫn đi tuần tự nên không bị đảo thứ tự)
-                handler.postAtTime({ finish() }, chainToken, SystemClock.uptimeMillis() + 200)
+                handler.postAtTime({
+                    if (!done && !acked) {
+                        // không có phản hồi: nhiều lần liên tiếp = kết nối chết ngầm (vd. mất Wi-Fi) -> báo ngay, đừng để người dùng tưởng vẫn chạm được
+                        adbNoAck++
+                        if (adbNoAck >= 3) {
+                            adbNoAck = 0
+                            AdbClient.markLost("không phản hồi (mất Wi-Fi?)")
+                            warnEngine("Mất kết nối Gỡ lỗi WiFi · macro không chạm được, đang tự nối lại")
+                            cancelChain()
+                            syncPassFlags()
+                        }
+                    }
+                    finish()
+                }, chainToken, SystemClock.uptimeMillis() + 200)
                 return
             }
             // Mất kết nối ADB (vd. mất Wi-Fi): không chạm được -> dừng chuỗi, mọi nút tự chuyển sang chạm xuyên.
@@ -2444,14 +2530,42 @@ class OverlayService : Service() {
             syncPassFlags()
             return
         }
-        val ok = acc.tap(cx.toFloat(), cy.toFloat(), handler) { finish() }
-        v.flashFx()
-        if (!ok) {
+        var attempts = 0
+        fun failedForGood() {
+            accFail++
+            if (accFail >= 3) {
+                accFail = 0
+                warnEngine("Trợ năng không chạm được · hãy tắt rồi bật lại dịch vụ Trợ năng của app")
+                cancelChain()
+            }
             finish()
-        } else {
-            // đề phòng hệ thống không gọi callback: tự đi tiếp sau 300ms để chuỗi không bị kẹt
-            handler.postAtTime({ finish() }, chainToken, SystemClock.uptimeMillis() + 300)
         }
+        fun fire() {
+            if (done) return
+            attempts++
+            val sent = try {
+                acc.tap(cx.toFloat(), cy.toFloat(), handler) { success ->
+                    if (done) return@tap
+                    if (success) {
+                        accFail = 0
+                        v.flashFx() // hiệu ứng CHỈ hiện khi cú chạm thật sự đã được hệ thống thực hiện
+                        finish()
+                    } else if (attempts < 3) {
+                        handler.postDelayed({ fire() }, 15) // bị huỷ (đụng cử chỉ khác...) -> thử lại
+                    } else {
+                        failedForGood()
+                    }
+                }
+            } catch (_: Exception) {
+                false
+            }
+            if (!sent) failedForGood()
+        }
+        fire()
+        // đề phòng hệ thống không gọi callback: tự đi tiếp sau 600ms để chuỗi không bị kẹt (tính là 1 lần thất bại)
+        handler.postAtTime({
+            if (!done) failedForGood()
+        }, chainToken, SystemClock.uptimeMillis() + 600)
     }
 
     private fun warnEngine(msg: String) {
