@@ -616,6 +616,7 @@ class OverlayService : Service() {
 
     private fun removeAll() {
         if (!::wm.isInitialized) return
+        dismissMacroPicker(false)
         setPanelFocusable(false)
         for ((v, _) in live) {
             try {
@@ -1355,6 +1356,7 @@ class OverlayService : Service() {
     }
 
     private fun exitEdit() {
+        dismissMacroPicker(false)
         setPanelFocusable(false)
         mode = Mode.RUN
         selectedId = -1
@@ -1472,8 +1474,7 @@ class OverlayService : Service() {
         val width = minOf(sw - dp(16), dp(400))
         panelW = width
         val lp = baseLp(width, WindowManager.LayoutParams.WRAP_CONTENT, true)
-        if (panelCollapsed) lp.width = minOf(width, dp(300))
-        lp.x = if (panelX >= 0) panelX.coerceIn(0, maxOf(0, sw - width)) else (sw - width) / 2
+        lp.x =if (panelX >= 0) panelX.coerceIn(0, maxOf(0, sw - width)) else (sw - width) / 2
         lp.y = if (panelY >= 0) panelY.coerceIn(0, maxOf(0, sh - dp(80))) else dp(8)
         lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
 
@@ -1551,6 +1552,7 @@ class OverlayService : Service() {
         )
         root.addView(scroll)
         scroll.visibility = if (panelCollapsed) View.GONE else View.VISIBLE
+        if (panelCollapsed) applyCollapsePadding(root, true)
         panelScroll = scroll
         panelCollapseBtn = collapse
 
@@ -1591,15 +1593,23 @@ class OverlayService : Service() {
         updateWin(root, lp)
     }
 
-    private fun panelWidthNow(): Int = if (panelCollapsed) minOf(panelW, dp(300)) else panelW
+    /** Chiều ngang bảng luôn giữ nguyên, kể cả khi thu gọn (chỉ thu gọn chiều dọc). */
+    private fun panelWidthNow(): Int = panelW
 
-    /** Thu gọn bảng thành 1 thanh tiêu đề (nhìn rõ màn hình để đặt nút) hoặc mở lại đầy đủ. */
+    /** Khi thu gọn: bỏ khoảng trống thừa dưới thanh tiêu đề cho gọn đẹp. */
+    private fun applyCollapsePadding(root: View, c: Boolean) {
+        (root as? ViewGroup)?.getChildAt(0)?.setPadding(0, 0, 0, if (c) 0 else dp(6))
+        root.setPadding(dp(12), dp(8), dp(12), if (c) dp(8) else dp(12))
+    }
+
+    /** Thu gọn bảng thành 1 thanh tiêu đề (nhìn rõ màn hình để đặt nút) hoặc mở lại đầy đủ. Chiều ngang giữ nguyên. */
     private fun setPanelCollapsed(c: Boolean) {
         panelCollapsed = c
         panelScroll?.visibility = if (c) View.GONE else View.VISIBLE
         panelCollapseBtn?.text = if (c) "+" else "−"
         val lp = panelLp ?: return
         val root = panelRoot ?: return
+        applyCollapsePadding(root, c)
         if (root.visibility == View.VISIBLE) {
             lp.width = panelWidthNow()
             lp.height = WindowManager.LayoutParams.WRAP_CONTENT
@@ -1880,10 +1890,10 @@ class OverlayService : Service() {
         r2wrap.topMargin = dp(8)
         c.addView(r2, r2wrap)
 
-        // dropdown chọn macro
+        // dropdown chọn macro: bấm vào sẽ mở popup nổi (có ô tìm kiếm, kéo lên xuống để chọn)
         val names = Store.macroNames(this)
         val dd = label(
-            (if (names.isEmpty()) "Chưa có macro nào đã lưu" else "Chọn macro đã lưu") + (if (listOpen) "   ▴" else "   ▾"),
+            (if (names.isEmpty()) "Chưa có macro nào đã lưu" else "Chọn macro đã lưu") + "   ▾",
             13f, Theme.TEXT
         )
         dd.gravity = Gravity.CENTER_VERTICAL
@@ -1891,42 +1901,11 @@ class OverlayService : Service() {
         dd.background = roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.STROKE, dp(1))
         dd.setOnClickListener {
             setPanelFocusable(false)
-            if (names.isNotEmpty()) {
-                listOpen = !listOpen
-                refreshPanel()
-            }
+            if (names.isNotEmpty()) showMacroPicker()
         }
         val r3 = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, rowH)
         r3.topMargin = dp(8)
         c.addView(dd, r3)
-
-        if (listOpen && names.isNotEmpty()) {
-            val list = LinearLayout(this)
-            list.orientation = LinearLayout.VERTICAL
-            list.background = roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.STROKE, dp(1))
-            for (n in names) {
-                val item = label("•  $n", 14f, Theme.ACCENT)
-                item.setPadding(dp(14), dp(10), dp(14), dp(10))
-                item.setOnClickListener {
-                    val loaded = Store.loadMacro(this, n)
-                    if (loaded != null) {
-                        replaceButtons(loaded)
-                        nameDraft = n
-                        selectedId = -1
-                        listOpen = false
-                        persist()
-                        deselect()
-                        toast("Đã tải macro: $n")
-                    }
-                }
-                list.addView(item)
-            }
-            val sv = MaxHeightScroll(this, dp(130))
-            sv.addView(list)
-            val slp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            slp.topMargin = dp(4)
-            c.addView(sv, slp)
-        }
 
         // xuất / nhập macro ra tệp để chia sẻ
         val rs = LinearLayout(this)
@@ -2397,8 +2376,8 @@ class OverlayService : Service() {
         if (shareReturnEdit && mode == Mode.RUN) {
             shareReturnEdit = false
             enterEdit()
-            if (imported) listOpen = true
             refreshPanel()
+            if (imported) handler.post { showMacroPicker() }
         }
         shareReturnEdit = false
     }
@@ -2439,6 +2418,228 @@ class OverlayService : Service() {
             wm.updateViewLayout(root, lp)
         } catch (_: Exception) {
         }
+    }
+
+
+    // ---------------------------------------------------------------- popup nổi chọn macro (tìm kiếm + animation)
+
+    private var pickerRoot: View? = null
+    private var pickerClosing = false
+
+    /** Bỏ dấu tiếng Việt + hạ chữ thường để tìm kiếm không phân biệt dấu ("ban sung" tìm được "Bắn súng"). */
+    private fun foldText(s: String): String {
+        val n = java.text.Normalizer.normalize(s.lowercase(), java.text.Normalizer.Form.NFD)
+        return n.replace(Regex("\\p{M}+"), "").replace('đ', 'd')
+    }
+
+    private fun showMacroPicker() {
+        if (pickerRoot != null) return
+        val all = Store.macroNames(this)
+        if (all.isEmpty()) return
+        val (sw, sh) = screenSize()
+        val portrait = sh >= sw
+
+        // cửa sổ phủ toàn màn hình: nền mờ + thẻ nổi ở giữa phía trên
+        val root = object : android.widget.FrameLayout(this) {
+            override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+                if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+                    if (event.action == KeyEvent.ACTION_UP) dismissMacroPicker(true)
+                    return true
+                }
+                return super.dispatchKeyEvent(event)
+            }
+        }
+        root.setBackgroundColor(Color.parseColor("#99000000"))
+        root.setOnClickListener { dismissMacroPicker(true) } // bấm ra ngoài -> đóng
+
+        val cardW = minOf(sw - dp(32), dp(360))
+        val maxListH = if (portrait) minOf((sh * 0.42f).toInt(), dp(340)) else (sh * 0.30f).toInt()
+
+        val card = LinearLayout(this)
+        card.orientation = LinearLayout.VERTICAL
+        card.background = roundedBg(Color.parseColor("#FF101510"), dp(20).toFloat(), Theme.STROKE, dp(1))
+        card.setPadding(dp(12), dp(12), dp(12), dp(12))
+        card.isClickable = true // nuốt chạm trong thẻ, không đóng nhầm
+        card.elevation = dp(12).toFloat()
+
+        val head = LinearLayout(this)
+        head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        val ttl = label("Chọn macro đã lưu", 15f, Theme.ACCENT, true)
+        head.addView(ttl, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val cnt = label("${all.size}", 12f, Theme.MUTED)
+        head.addView(cnt)
+        card.addView(head)
+
+        val search = EditText(this)
+        search.hint = "🔍  Tìm macro..."
+        search.setHintTextColor(Theme.MUTED)
+        search.setTextColor(Theme.TEXT)
+        search.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f)
+        search.setSingleLine(true)
+        search.imeOptions = EditorInfo.IME_ACTION_DONE
+        search.setPadding(dp(12), 0, dp(12), 0)
+        search.background = roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.STROKE, dp(1))
+        val slp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42))
+        slp.topMargin = dp(10)
+        card.addView(search, slp)
+
+        val list = LinearLayout(this)
+        list.orientation = LinearLayout.VERTICAL
+        val sv = MaxHeightScroll(this, maxListH)
+        sv.isVerticalScrollBarEnabled = false
+        sv.overScrollMode = View.OVER_SCROLL_NEVER
+        sv.addView(list, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        val svlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        svlp.topMargin = dp(8)
+        card.addView(sv, svlp)
+
+        val current = nameDraft.trim()
+        fun fill(q: String) {
+            list.removeAllViews()
+            val key = foldText(q.trim())
+            val shown = if (key.isEmpty()) all else all.filter { foldText(it).contains(key) }
+            cnt.text = if (key.isEmpty()) "${all.size}" else "${shown.size}/${all.size}"
+            if (shown.isEmpty()) {
+                val e = label("Không tìm thấy macro nào", 13f, Theme.MUTED)
+                e.gravity = Gravity.CENTER
+                e.setPadding(0, dp(22), 0, dp(22))
+                list.addView(e, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                return
+            }
+            for (n in shown) {
+                val isCur = n == current
+                val item = label(n, 14f, if (isCur) Theme.ACCENT else Theme.TEXT, isCur)
+                item.maxLines = 1
+                item.ellipsize = android.text.TextUtils.TruncateAt.END
+                item.gravity = Gravity.CENTER_VERTICAL
+                item.setPadding(dp(14), 0, dp(14), 0)
+                val sl = android.graphics.drawable.StateListDrawable()
+                sl.addState(intArrayOf(android.R.attr.state_pressed), roundedBg(Color.parseColor("#553C7A24"), dp(10).toFloat()))
+                sl.addState(intArrayOf(), roundedBg(if (isCur) Color.parseColor("#223C7A24") else Color.TRANSPARENT, dp(10).toFloat()))
+                item.background = sl
+                item.isClickable = true
+                item.setOnClickListener {
+                    val loaded = Store.loadMacro(this, n)
+                    if (loaded != null) {
+                        dismissMacroPicker(true)
+                        replaceButtons(loaded)
+                        nameDraft = n
+                        selectedId = -1
+                        listOpen = false
+                        persist()
+                        deselect()
+                        toast("Đã tải macro: $n")
+                    }
+                }
+                val ilp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44))
+                ilp.bottomMargin = dp(2)
+                list.addView(item, ilp)
+            }
+        }
+        fill("")
+        search.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
+            override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                fill(s?.toString() ?: "")
+                sv.scrollTo(0, 0)
+            }
+        })
+        search.setOnEditorActionListener { v, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_DONE) {
+                try {
+                    (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                        .hideSoftInputFromWindow(v.windowToken, 0)
+                } catch (_: Exception) {
+                }
+                search.clearFocus()
+                true
+            } else false
+        }
+        search.setOnClickListener {
+            try {
+                search.requestFocus()
+                (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                    .showSoftInput(search, InputMethodManager.SHOW_IMPLICIT)
+            } catch (_: Exception) {
+            }
+        }
+
+        val clp = android.widget.FrameLayout.LayoutParams(cardW, ViewGroup.LayoutParams.WRAP_CONTENT)
+        clp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        clp.topMargin = if (portrait) dp(72) else dp(12)
+        root.addView(card, clp)
+
+        // cửa sổ nổi riêng (nhận chạm + bàn phím), nằm trên bảng setup
+        val lp = WindowManager.LayoutParams(
+            sw, sh, overlayType(),
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        )
+        lp.gravity = Gravity.TOP or Gravity.START
+        lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
+        if (Build.VERSION.SDK_INT >= 28) {
+            lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+        }
+        try {
+            wm.addView(root, lp)
+        } catch (_: Exception) {
+            return
+        }
+        pickerRoot = root
+        pickerClosing = false
+
+        // animation mở: nền mờ dần + thẻ trượt xuống, phóng nhẹ
+        root.alpha = 0f
+        card.alpha = 0f
+        card.translationY = -dp(18).toFloat()
+        card.scaleX = 0.94f
+        card.scaleY = 0.94f
+        card.pivotX = cardW / 2f
+        card.pivotY = 0f
+        val dec = android.view.animation.DecelerateInterpolator(1.6f)
+        root.animate().alpha(1f).setDuration(180).start()
+        card.animate().alpha(1f).translationY(0f).scaleX(1f).scaleY(1f).setDuration(220).setInterpolator(dec).start()
+    }
+
+    private fun dismissMacroPicker(animate: Boolean) {
+        val root = pickerRoot ?: return
+        if (!animate) {
+            pickerRoot = null
+            pickerClosing = false
+            root.animate().cancel()
+            try {
+                (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                    .hideSoftInputFromWindow(root.windowToken, 0)
+            } catch (_: Exception) {
+            }
+            try {
+                wm.removeViewImmediate(root)
+            } catch (_: Exception) {
+            }
+            return
+        }
+        if (pickerClosing) return
+        pickerClosing = true
+        try {
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                .hideSoftInputFromWindow(root.windowToken, 0)
+        } catch (_: Exception) {
+        }
+        val card = (root as? ViewGroup)?.getChildAt(0)
+        card?.animate()?.alpha(0f)?.translationY(-dp(12).toFloat())?.scaleX(0.96f)?.scaleY(0.96f)
+            ?.setDuration(150)?.setInterpolator(android.view.animation.AccelerateInterpolator())?.start()
+        root.animate().alpha(0f).setDuration(170).withEndAction {
+            if (pickerRoot === root) {
+                pickerRoot = null
+                pickerClosing = false
+                try {
+                    wm.removeViewImmediate(root)
+                } catch (_: Exception) {
+                }
+            }
+        }.start()
     }
 
     // ---------------------------------------------------------------- chạy macro
