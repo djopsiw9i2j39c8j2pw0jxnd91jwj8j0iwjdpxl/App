@@ -312,7 +312,11 @@ class OverlayService : Service() {
                     handler.post { onNetBack() }
                 }
             }
-            cm.registerDefaultNetworkCallback(cb)
+            // CHỈ theo dõi Wi-Fi (Gỡ lỗi WiFi cần Wi-Fi; 4G/5G không tính, có 4G vẫn phải báo mất Wi-Fi)
+            val req = android.net.NetworkRequest.Builder()
+                .addTransportType(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+                .build()
+            cm.registerNetworkCallback(req, cb)
             netCb = cb
         } catch (_: Exception) {
         }
@@ -332,7 +336,7 @@ class OverlayService : Service() {
         if (Store.tapMode(this) != TAP_ADB || !Store.isRunning(this)) return
         AdbClient.markLost("mất Wi-Fi")
         buzz()
-        Toast.makeText(this, "⚠ MẤT WI-FI · Gỡ lỗi WiFi đã ngắt, macro KHÔNG chạm được", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, "⚠ MẤT WI-FI · Gỡ lỗi WiFi đã ngắt, macro KHÔNG chạm được. Có Wi-Fi lại thì bạn tự bật lại Gỡ lỗi không dây nhé", Toast.LENGTH_LONG).show()
         cancelChain()
         syncPassFlags()
     }
@@ -341,7 +345,7 @@ class OverlayService : Service() {
         if (!netWasLost) return
         netWasLost = false
         if (Store.tapMode(this) != TAP_ADB || !Store.isRunning(this)) return
-        Toast.makeText(this, "Đã có mạng lại · đang nối lại Gỡ lỗi WiFi…", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, "Đã có Wi-Fi lại · hãy BẬT LẠI Gỡ lỗi không dây trong Tùy chọn nhà phát triển (máy tự tắt khi mất Wi-Fi)", Toast.LENGTH_LONG).show()
         try {
             AdbClient.connect(applicationContext)
         } catch (_: Exception) {
@@ -2506,7 +2510,7 @@ class OverlayService : Service() {
                         if (adbNoAck >= 3) {
                             adbNoAck = 0
                             AdbClient.markLost("không phản hồi (mất Wi-Fi?)")
-                            warnEngine("Mất kết nối Gỡ lỗi WiFi · macro không chạm được, đang tự nối lại")
+                            warnEngine("Mất kết nối Gỡ lỗi WiFi · macro không chạm được, hãy kiểm tra Wi-Fi và bật lại Gỡ lỗi không dây")
                             cancelChain()
                             syncPassFlags()
                         }
