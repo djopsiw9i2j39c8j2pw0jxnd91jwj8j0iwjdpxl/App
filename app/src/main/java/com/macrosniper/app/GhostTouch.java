@@ -816,7 +816,7 @@ public final class GhostTouch implements Toucher {
                     float x = screen(s, true), y = screen(s, false);
                     aim[s] = null;
                     Zone z = pre ? zoneAt(x, y) : null; // chỉ vuốt tâm khi đang chạy macro (đã "tiếp quản sớm")
-                    if (z != null) aim[s] = new AimFilter(x, y, z.smooth, z.gainPct, z.deadPx, System.nanoTime());
+                    if (z != null) aim[s] = new AimFilter(x, y, z.cx, z.cy, z.r, z.smooth, z.gainPct, z.deadPx, System.nanoTime());
                     addPointer(s, x, y);
                 }
             }
@@ -887,7 +887,19 @@ public final class GhostTouch implements Toucher {
         private void syncLocked() throws Exception {
             for (int i = n - 1; i >= 0; i--) {
                 int k = keys[i];
-                if (k != GHOST && (!real(k) || tids[i] != tid[k])) removeAt(i);
+                if (k != GHOST && (!real(k) || tids[i] != tid[k])) {
+                    AimFilter af = k < aim.length ? aim[k] : null;
+                    if (af != null && !real(k)) { // nhấc tay: chốt ngón ảo ở điểm cuối của ngón thật rồi mới nhấc
+                        af.finish(screen(k, true), screen(k, false));
+                        float fx = Math.max(0f, Math.min(w - 1f, af.x())), fy = Math.max(0f, Math.min(h - 1f, af.y()));
+                        if (Math.abs(fx - xs[i]) >= 0.5f || Math.abs(fy - ys[i]) >= 0.5f) {
+                            xs[i] = fx;
+                            ys[i] = fy;
+                            emit(A_MOVE);
+                        }
+                    }
+                    removeAt(i);
+                }
             }
             addAllReal();
             boolean moved = false;
@@ -897,7 +909,18 @@ public final class GhostTouch implements Toucher {
                 float x = screen(k, true), y = screen(k, false);
                 AimFilter af = k < aim.length ? aim[k] : null;
                 if (af != null) {
-                    af.update(x, y, System.nanoTime());
+                    long now = System.nanoTime();
+                    af.update(x, y, now);
+                    if (af.needRebase(w, h, now)) {
+                        // ngón ảo sắp ra mép: phát các thay đổi dở rồi nhấc + đặt lại ở phía sau hướng đi (vuốt tiếp được)
+                        if (moved) { emit(A_MOVE); moved = false; }
+                        af.rebase(w, h, now);
+                        removeAt(i); // xoá luôn aim[k] -> gắn lại ngay sau đó
+                        aim[k] = af;
+                        addPointer(k, Math.max(0f, Math.min(w - 1f, af.x())), Math.max(0f, Math.min(h - 1f, af.y())));
+                        i--; // phần tử sau dồn lên vị trí i; ngón vừa đặt lại nằm cuối mảng
+                        continue;
+                    }
                     x = Math.max(0f, Math.min(w - 1f, af.x()));
                     y = Math.max(0f, Math.min(h - 1f, af.y()));
                 }
