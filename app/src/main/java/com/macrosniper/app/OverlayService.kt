@@ -388,7 +388,8 @@ class OverlayService : Service() {
     private fun applyTouchable(lp: WindowManager.LayoutParams, touchable: Boolean) {
         lp.flags = if (touchable) lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
         else lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-        lp.alpha = if (!touchable && Build.VERSION.SDK_INT >= 31 && !AdbClient.touchUnblocked(this)) PASS_ALPHA else 1f
+        // Luôn giữ độ mờ an toàn (không tin vào công tắc mở khóa) để tâm/vòng/nút số LUÔN cho chạm xuyên mặc định.
+        lp.alpha = if (!touchable && Build.VERSION.SDK_INT >= 31) PASS_ALPHA else 1f
     }
 
     private val PASS_ALPHA = 0.79f
@@ -407,7 +408,7 @@ class OverlayService : Service() {
      */
     private fun rebalanceAlpha() {
         if (!::wm.isInitialized) return
-        val free = Build.VERSION.SDK_INT < 31 || AdbClient.touchUnblocked(this)
+        val free = Build.VERSION.SDK_INT < 31
         val views = ArrayList<View>()
         val lps = ArrayList<WindowManager.LayoutParams>()
         for ((id, v) in btnViews) {
@@ -2344,6 +2345,11 @@ class OverlayService : Service() {
         stepChain(chainGen, ids, 0)
     }
 
+    private var lastTapX = -100000
+    private var lastTapY = -100000
+    private var lastTapAt = 0L
+    private val SAME_SPOT_GAP_MS = 45L
+
     private fun stepChain(gen: Int, ids: List<Int>, i: Int) {
         if (gen != chainGen) return
         chainLastStep = SystemClock.uptimeMillis()
@@ -2369,7 +2375,23 @@ class OverlayService : Service() {
             stepChain(gen, ids, i + 1)
             return
         }
-        val wait = maxOf(b.delayMs, 1).toLong()
+        var wait = maxOf(b.delayMs, 1).toLong()
+        // 2 nút trùng/gần nhau: cách tối thiểu SAME_SPOT_GAP_MS giữa 2 cú chạm để game không gộp/bỏ qua cú sau
+        val pv = btnViews[b.id]
+        if (pv != null && pv.isAttachedToWindow) {
+            val l = IntArray(2)
+            pv.getLocationOnScreen(l)
+            val px = l[0] + pv.width / 2
+            val py = l[1] + pv.height / 2
+            val near = Math.abs(px - lastTapX) <= dp(12) && Math.abs(py - lastTapY) <= dp(12)
+            if (near) {
+                val since = SystemClock.uptimeMillis() - lastTapAt
+                if (since < SAME_SPOT_GAP_MS) wait = maxOf(wait, SAME_SPOT_GAP_MS - since)
+            }
+            lastTapX = px
+            lastTapY = py
+            lastTapAt = SystemClock.uptimeMillis() + wait
+        }
         handler.postAtTime({
             if (gen == chainGen) {
                 tapButton(b.id) { stepChain(gen, ids, i + 1) }
