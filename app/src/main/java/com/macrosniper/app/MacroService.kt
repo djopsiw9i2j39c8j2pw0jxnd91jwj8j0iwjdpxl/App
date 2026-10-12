@@ -3,7 +3,6 @@ package com.macrosniper.app
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
-import android.os.Build
 import android.os.Handler
 import android.view.accessibility.AccessibilityEvent
 
@@ -23,9 +22,6 @@ class MacroService : AccessibilityService() {
 
         /** Thời gian đè xuống của mỗi cú chạm (ms). */
         private const val TAP_MS = 30L
-
-        /** Độ dài mỗi đoạn của cú vuốt liên tục (ms). */
-        private const val DRAG_SEG_MS = 40L
     }
 
     override fun onServiceConnected() {
@@ -76,100 +72,6 @@ class MacroService : AccessibilityService() {
             dispatchGesture(gesture, cb, handler)
         } catch (_: Exception) {
             false
-        }
-    }
-
-    // ------------------------------------------------------------------ vuốt liên tục (cụm nút vuốt tâm, cần Android 8.0+)
-
-    private var dStroke: GestureDescription.StrokeDescription? = null
-    private var dCurX = 0f
-    private var dCurY = 0f
-    private var dTgtX = 0f
-    private var dTgtY = 0f
-    private var dActive = false
-    private var dBusy = false
-    private var dEnding = false
-    private var dFinalSent = false
-    private var dHandler: Handler? = null
-
-    fun canDrag(): Boolean = Build.VERSION.SDK_INT >= 26
-
-    /** Đang có một cú vuốt liên tục còn sống (false nếu bị hệ thống huỷ -> bộ điều khiển sẽ đặt lại). */
-    fun dragAlive(): Boolean = dActive
-
-    fun dragBegin(x: Float, y: Float, handler: Handler): Boolean {
-        if (Build.VERSION.SDK_INT < 26) return false
-        dHandler = handler
-        dStroke = null
-        dCurX = x
-        dCurY = y
-        dTgtX = x
-        dTgtY = y
-        dActive = true
-        dBusy = false
-        dEnding = false
-        dFinalSent = false
-        dispatchDragSeg()
-        return dActive
-    }
-
-    /** Chỉ ghi nhận đích mới; đoạn vuốt kế tiếp sẽ đi tới đích này. */
-    fun dragMove(x: Float, y: Float) {
-        dTgtX = x
-        dTgtY = y
-    }
-
-    fun dragEnd() {
-        if (!dActive) return
-        dEnding = true
-        if (!dBusy) dispatchDragSeg()
-    }
-
-    private fun dispatchDragSeg() {
-        if (!dActive || Build.VERSION.SDK_INT < 26) return
-        val tx = dTgtX
-        val ty = dTgtY
-        val path = Path()
-        path.moveTo(dCurX, dCurY)
-        if (tx != dCurX || ty != dCurY) path.lineTo(tx, ty)
-        val cont = !dEnding
-        val prev = dStroke
-        val stroke = if (prev == null) {
-            GestureDescription.StrokeDescription(path, 0L, DRAG_SEG_MS, cont)
-        } else {
-            prev.continueStroke(path, 0L, DRAG_SEG_MS, cont)
-        }
-        dStroke = stroke
-        dFinalSent = dEnding
-        dBusy = true
-        val cb = object : AccessibilityService.GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) {
-                dCurX = tx
-                dCurY = ty
-                dBusy = false
-                if (dFinalSent) {
-                    dActive = false
-                    dStroke = null
-                } else {
-                    dispatchDragSeg()
-                }
-            }
-
-            override fun onCancelled(gestureDescription: GestureDescription?) {
-                dBusy = false
-                dActive = false
-                dStroke = null
-            }
-        }
-        val ok = try {
-            dispatchGesture(stroke.let { GestureDescription.Builder().addStroke(it).build() }, cb, dHandler)
-        } catch (_: Exception) {
-            false
-        }
-        if (!ok) {
-            dBusy = false
-            dActive = false
-            dStroke = null
         }
     }
 }

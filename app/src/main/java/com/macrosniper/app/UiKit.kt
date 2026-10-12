@@ -15,15 +15,13 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.ScrollView
-import kotlin.math.atan2
-import kotlin.math.cos
 import kotlin.math.hypot
-import kotlin.math.sin
 
 object Theme {
     val ACCENT = Color.parseColor("#8DFF3F")
     val ACCENT2 = Color.parseColor("#3FD91C")
     val LIME = Color.parseColor("#E4FF6B")
+    val AIM = Color.parseColor("#4FD8FF")
     val TEXT = Color.parseColor("#F2FFF0")
     val MUTED = Color.parseColor("#9AA79A")
     val DANGER = Color.parseColor("#FF5A5A")
@@ -41,7 +39,7 @@ fun roundedBg(fill: Int, radiusPx: Float, strokeColor: Int = 0, strokePx: Int = 
     return g
 }
 
-/** Nút tròn trên màn hình: số (NUM) hoặc "mainN" (MAIN). */
+/** Nút tròn trên màn hình: số (NUM), "mainN" (MAIN) hoặc vòng ngắm "Vuốt tâm" (AIM). */
 class BtnView(ctx: Context, val m: MacroButton) : View(ctx) {
     var hilite: Boolean = false
         set(v) {
@@ -83,7 +81,8 @@ class BtnView(ctx: Context, val m: MacroButton) : View(ctx) {
         val cy = h / 2f
         val r = minOf(w, h) / 2f
         val isMain = m.kind == Kind.MAIN
-        val col = if (isMain) Theme.LIME else Theme.ACCENT
+        val isAim = m.kind == Kind.AIM
+        val col = if (isAim) Theme.AIM else if (isMain) Theme.LIME else Theme.ACCENT
 
         // quầng sáng ngoài
         p.shader = null
@@ -110,21 +109,37 @@ class BtnView(ctx: Context, val m: MacroButton) : View(ctx) {
         p.alpha = 255
         c.drawCircle(cx, cy, br - p.strokeWidth / 2f, p)
 
+        // vòng ngắm: 4 vạch ngắn hướng vào tâm
+        if (isAim) {
+            p.strokeWidth = br * 0.06f
+            p.color = col
+            p.alpha = 200
+            val o = br * 0.80f
+            val i = br * 0.56f
+            c.drawLine(cx, cy - o, cx, cy - i, p)
+            c.drawLine(cx, cy + i, cx, cy + o, p)
+            c.drawLine(cx - o, cy, cx - i, cy, p)
+            c.drawLine(cx + i, cy, cx + o, cy, p)
+            p.alpha = 255
+        }
+
         // chữ: tên tuỳ chỉnh (nếu có) hoặc số / mainN. Chữ luôn tự co / xuống dòng / cắt bớt cho nằm gọn trong nút.
         val custom = m.name.trim()
         val label = when {
             custom.isNotEmpty() -> custom
             isMain -> "main${m.number}"
+            isAim -> "AIM"
             else -> m.number.toString()
         }
         val base = when {
-            custom.isNotEmpty() -> if (isMain) br * 0.5f else br * 0.62f
+            custom.isNotEmpty() -> if (isMain || isAim) br * 0.5f else br * 0.62f
             isMain -> br * 0.5f
+            isAim -> br * 0.42f
             label.length >= 3 -> br * 0.7f
             label.length == 2 -> br * 0.9f
             else -> br * 1.05f
         }
-        val tag = showTag && !isMain && m.mainNo > 0
+        val tag = showTag && !isMain && !isAim && m.mainNo > 0
         val tagText = if (custom.isNotEmpty()) "${m.number}·m${m.mainNo}" else "m${m.mainNo}"
         tp.color = col
         val maxW = br * 1.52f
@@ -417,121 +432,5 @@ class MaxHeightScroll(ctx: Context, private val maxH: Int) : ScrollView(ctx) {
             widthMeasureSpec,
             MeasureSpec.makeMeasureSpec(maxH, MeasureSpec.AT_MOST)
         )
-    }
-}
-
-/**
- * Cụm nút vuốt tâm: một nút giữa + vòng các nút tròn nhỏ quanh nó (giống vòng nút của iPhone).
- * Kéo / giữ ngón vào nút hướng nào thì tâm vuốt theo hướng đó. Hướng 0 = lên, đi theo chiều kim đồng hồ.
- */
-class SwipePadView(ctx: Context) : View(ctx) {
-    var dirs = 8
-    var active = -1
-    var editing = false
-
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-    private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
-    private val txt = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textAlign = Paint.Align.CENTER
-        typeface = Typeface.DEFAULT_BOLD
-    }
-
-    private fun radius() = minOf(width, height) / 2f
-    private fun nodeR() = radius() * 0.25f
-    private fun ringR() = radius() - nodeR() - 1f
-
-    /** Hướng (góc, radian) của nút thứ [i]; 0 = lên. */
-    fun angleOf(i: Int): Double = i * 2.0 * Math.PI / dirs
-
-    /** Nút hướng nào nằm dưới điểm (x, y)? -1 = nút giữa / ngoài vùng. */
-    fun hit(x: Float, y: Float): Int {
-        val cx = width / 2f
-        val cy = height / 2f
-        val dx = x - cx
-        val dy = y - cy
-        val dist = hypot(dx, dy)
-        if (dist < radius() * 0.32f || dist > radius() * 1.25f) return -1
-        // góc tính từ hướng "lên", chiều kim đồng hồ
-        var a = atan2(dx.toDouble(), -dy.toDouble())
-        if (a < 0) a += 2.0 * Math.PI
-        val step = 2.0 * Math.PI / dirs
-        return (Math.round(a / step).toInt()) % dirs
-    }
-
-    override fun onDraw(c: Canvas) {
-        val cx = width / 2f
-        val cy = height / 2f
-        val d = resources.displayMetrics.density
-        val r = radius()
-        // đĩa nền mờ
-        fill.color = Color.parseColor("#66101510")
-        c.drawCircle(cx, cy, r, fill)
-        line.strokeWidth = 1.5f * d
-        line.color = Theme.STROKE
-        c.drawCircle(cx, cy, r - 1f, line)
-        // nút giữa
-        fill.color = if (editing) Theme.LIME else Theme.ACCENT2
-        fill.alpha = 110
-        c.drawCircle(cx, cy, r * 0.2f, fill)
-        for (i in 0 until dirs) {
-            val a = angleOf(i)
-            val nx = cx + (sin(a) * ringR()).toFloat()
-            val ny = cy - (cos(a) * ringR()).toFloat()
-            val on = i == active
-            fill.color = if (on) Theme.ACCENT else Color.parseColor("#CC1C241B")
-            fill.alpha = 255
-            c.drawCircle(nx, ny, nodeR(), fill)
-            line.color = if (on) Color.WHITE else Theme.ACCENT
-            line.strokeWidth = (if (on) 2.2f else 1.4f) * d
-            c.drawCircle(nx, ny, nodeR(), line)
-            // mũi tên nhỏ chỉ hướng vuốt
-            val k = nodeR() * 0.55f
-            val ex = nx + (sin(a) * k).toFloat()
-            val ey = ny - (cos(a) * k).toFloat()
-            val bx = nx - (sin(a) * k).toFloat()
-            val by = ny + (cos(a) * k).toFloat()
-            line.color = if (on) Color.BLACK else Theme.ACCENT
-            line.strokeWidth = 2f * d
-            line.strokeCap = Paint.Cap.ROUND
-            c.drawLine(bx, by, ex, ey, line)
-            val hx = (cos(a) * k * 0.55f).toFloat()
-            val hy = (sin(a) * k * 0.55f).toFloat()
-            val tx = ex - (sin(a) * k * 0.6f).toFloat()
-            val ty = ey + (cos(a) * k * 0.6f).toFloat()
-            c.drawLine(ex, ey, tx + hx, ty + hy, line)
-            c.drawLine(ex, ey, tx - hx, ty - hy, line)
-        }
-        if (editing) {
-            txt.color = Theme.TEXT
-            txt.textSize = 10f * d
-            c.drawText("vuốt tâm", cx, cy + 4f * d, txt)
-        }
-    }
-}
-
-/** Chấm "điểm bắt đầu vuốt": chỉ hiện lúc setup, kéo tới vùng xoay camera của game. */
-class AnchorView(ctx: Context) : View(ctx) {
-    private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
-    private val f = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-    private val t = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textAlign = Paint.Align.CENTER
-        typeface = Typeface.DEFAULT_BOLD
-    }
-
-    override fun onDraw(c: Canvas) {
-        val cx = width / 2f
-        val cy = height / 2f
-        val d = resources.displayMetrics.density
-        val r = minOf(width, height) / 2f - 2f * d
-        f.color = Color.parseColor("#55101510")
-        c.drawCircle(cx, cy, r, f)
-        p.color = Theme.LIME
-        p.strokeWidth = 2f * d
-        c.drawCircle(cx, cy, r, p)
-        f.color = Theme.LIME
-        c.drawCircle(cx, cy - 6f * d, 3f * d, f)
-        t.color = Theme.LIME
-        t.textSize = 9f * d
-        c.drawText("VUỐT", cx, cy + 10f * d, t)
     }
 }

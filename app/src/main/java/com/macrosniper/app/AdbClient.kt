@@ -91,6 +91,16 @@ object AdbClient {
     private var ghostStream: Any? = null
     private var ghostOut: OutputStream? = null
 
+    /** Các vùng "vuốt tâm" đang cần (gửi sang GhostTouch; nhớ lại để gửi lại sau khi nối lại). Rỗng = tắt. */
+    @Volatile private var assistLine = "Z 0\n"
+
+    /** true = GhostTouch báo đã bật vuốt tâm (đã tiếp quản cảm ứng để lọc quỹ đạo ngón). */
+    @Volatile
+    var assistOn = false
+        private set
+
+    @Volatile private var assistNote = ""
+
     /** Thời gian ngón phụ đè xuống mỗi cú chạm (ms). */
     private const val GHOST_HOLD_MS = 16
 
@@ -200,7 +210,7 @@ object AdbClient {
         state == State.CONNECTED -> {
             // "đã nhả" (nhả cảm ứng lúc rảnh) và "đang ..." (đang chờ / khởi tạo) là trạng thái bình thường, không phải lỗi
             fun real(n: String) = n.isNotEmpty() && !n.startsWith("đã nhả") && !n.startsWith("đang")
-            val err = if (real(grabNote)) grabNote else if (real(ghostNote)) ghostNote else ""
+            val err = if (real(grabNote)) grabNote else if (real(ghostNote)) ghostNote else if (real(assistNote)) "vuốt tâm: $assistNote" else ""
             "●  Đã kết nối" + (if (err.isNotEmpty()) " · Lỗi: $err" else "")
         }
         state == State.CONNECTING -> "…  Đang kết nối"
@@ -584,12 +594,21 @@ object AdbClient {
                         ghostNote = ""
                         ghostReady = true
                         sendArm()
+                        sendAssist()
                         latch.countDown()
                         notifyUi()
                     }
                     line.startsWith("FAIL") -> {
                         ghostNote = line.removePrefix("FAIL").trim().take(70)
                         latch.countDown()
+                    }
+                    line.startsWith("ASSIST") -> {
+                        val ok = line.startsWith("ASSIST 1")
+                        assistOn = ok
+                        assistNote = if (line.startsWith("ASSIST FAIL")) line.removePrefix("ASSIST FAIL").trim().take(70) else ""
+                        // bật vuốt tâm = macro + ngón thật đã chung 1 luồng bơm (kể cả máy vốn ghi thẳng /dev/input được)
+                        if (ok) takeover = true
+                        notifyUi()
                     }
                     line.startsWith("GRAB") -> {
                         grabbed = line.startsWith("GRAB 1")
@@ -652,8 +671,44 @@ object AdbClient {
 
     private fun sendArm() {
         val g = ghostOut
-        if (!ghostReady || !takeover || g == null) return
+        if (!ghostReady || g == null) return
         val line = "P ${if (armOn) 1 else 0} $armRot $armW $armH\n"
+        io.execute {
+            try {
+                g.write(line.toByteArray())
+                g.flush()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    /** Một vùng vuốt tâm: tâm (cx, cy) + bán kính (px), độ mượt 0..100, tăng lực (%), vùng chết (px). */
+    class AimZone(val cx: Int, val cy: Int, val r: Int, val smooth: Int, val gainPct: Int, val deadPx: Int)
+
+    /**
+     * Báo cho GhostTouch các vùng vuốt tâm (danh sách rỗng = tắt). Ngón thật đặt xuống TRONG vùng nào thì quỹ đạo
+     * được làm mượt / chống rung / tăng lực trước khi tới game. Cần chế độ Gỡ lỗi WiFi đã kết nối.
+     */
+    fun setAssist(zones: List<AimZone>) {
+        val sb = StringBuilder("Z ").append(zones.size)
+        for (z in zones) {
+            sb.append(' ').append(z.cx).append(' ').append(z.cy).append(' ').append(z.r).append(' ')
+                .append(z.smooth).append(' ').append(z.gainPct).append(' ').append(z.deadPx)
+        }
+        val line = sb.append('\n').toString()
+        if (line == assistLine && (zones.isEmpty() || assistOn)) return
+        assistLine = line
+        if (zones.isEmpty()) {
+            assistOn = false
+            assistNote = ""
+        }
+        sendAssist()
+    }
+
+    private fun sendAssist() {
+        val g = ghostOut
+        if (!ghostReady || g == null) return
+        val line = assistLine
         io.execute {
             try {
                 g.write(line.toByteArray())
@@ -669,6 +724,7 @@ object AdbClient {
         takeover = false
         grabbed = false
         grabNote = ""
+        assistOn = false
         val r = Pair(ghostOut, ghostStream)
         ghostOut = null
         ghostStream = null
@@ -836,32 +892,4 @@ object AdbClient {
         }
         return true
     }
-
-    // ------------------------------------------------------------------ vuốt tâm liên tục (cụm nút vuốt)
-
-    /** Có thể vuốt liên tục lúc này không (cần ngón phụ sẵn sàng). */
-    fun canDrag(): Boolean = state == State.CONNECTED && ghostReady && ghostOut != null
-
-    private fun ghostLine(line: String): Boolean {
-        val g = ghostOut
-        if (state != State.CONNECTED || !ghostReady || g == null) return false
-        io.execute {
-            try {
-                g.write(line.toByteArray())
-                g.flush()
-            } catch (_: Throwable) {
-                ghostReady = false
-                ghostNote = "ngón phụ lỗi, vuốt tâm tạm dừng"
-                notifyUi()
-            }
-        }
-        return true
-    }
-
-    /** Đặt ngón vuốt xuống (x, y) px. [rot]/[w]/[h]: hướng + kích thước màn hình hiện tại. */
-    fun dragBegin(x: Int, y: Int, rot: Int, w: Int, h: Int): Boolean = ghostLine("B $x $y $rot $w $h\n")
-
-    fun dragMove(x: Int, y: Int): Boolean = ghostLine("V $x $y\n")
-
-    fun dragEnd(): Boolean = ghostLine("N\n")
 }

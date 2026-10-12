@@ -221,18 +221,16 @@ public final class GhostTouch implements Toucher {
     static final class Fingers {
         private final Axis ax, ay;
         private final int ghostSlot;
-        private final int ghostSlot2;
         private final boolean[] act, hx, hy;
         private final int[] rx, ry, tid;
         private int cur = 0;
         private boolean edge = false;
         private String last = "F";
 
-        Fingers(Axis ax, Axis ay, int ghostSlot, int ghostSlot2, int slots) {
+        Fingers(Axis ax, Axis ay, int ghostSlot, int slots) {
             this.ax = ax;
             this.ay = ay;
             this.ghostSlot = ghostSlot;
-            this.ghostSlot2 = ghostSlot2;
             int n = Math.max(2, Math.min(64, slots));
             act = new boolean[n];
             hx = new boolean[n];
@@ -285,7 +283,7 @@ public final class GhostTouch implements Toucher {
         private void emit() {
             StringBuilder sb = new StringBuilder("F");
             for (int i = 0; i < act.length; i++) {
-                if (i == ghostSlot || i == ghostSlot2 || !act[i] || !hx[i] || !hy[i]) continue;
+                if (i == ghostSlot || !act[i] || !hx[i] || !hy[i]) continue;
                 int px = (int) Math.round((rx[i] - ax.min) * 1000.0 / Math.max(1, ax.max - ax.min));
                 int py = (int) Math.round((ry[i] - ay.min) * 1000.0 / Math.max(1, ay.max - ay.min));
                 sb.append(' ').append(tid[i]).append(':').append(px).append(':').append(py);
@@ -303,7 +301,6 @@ public final class GhostTouch implements Toucher {
         private final String path;
         private final int evSize;
         private final int ghostSlot;
-        private final int ghostSlot2;
         private final boolean[] active;
         private volatile int curSlot = 0;
         volatile int lastRealSlot = 0;
@@ -311,19 +308,18 @@ public final class GhostTouch implements Toucher {
 
         private final Fingers fingers;
 
-        Tracker(String path, boolean is64, int ghostSlot, int ghostSlot2, int slots, Axis ax, Axis ay) {
-            this.fingers = new Fingers(ax, ay, ghostSlot, ghostSlot2, slots);
+        Tracker(String path, boolean is64, int ghostSlot, int slots, Axis ax, Axis ay) {
+            this.fingers = new Fingers(ax, ay, ghostSlot, slots);
             this.path = path;
             this.evSize = is64 ? 24 : 16;
             this.ghostSlot = ghostSlot;
-            this.ghostSlot2 = ghostSlot2;
             this.active = new boolean[Math.max(2, Math.min(64, slots))];
         }
 
         int realActive() {
             int n = 0;
             synchronized (active) {
-                for (int i = 0; i < active.length; i++) if (i != ghostSlot && i != ghostSlot2 && active[i]) n++;
+                for (int i = 0; i < active.length; i++) if (i != ghostSlot && active[i]) n++;
             }
             return n;
         }
@@ -347,7 +343,7 @@ public final class GhostTouch implements Toucher {
                         if (code == ABS_MT_SLOT) {
                             if (value >= 0 && value < active.length) {
                                 curSlot = value;
-                                if (value != ghostSlot && value != ghostSlot2) lastRealSlot = value;
+                                if (value != ghostSlot) lastRealSlot = value;
                             }
                         } else if (code == ABS_MT_TRACKING_ID) {
                             int s = curSlot;
@@ -365,6 +361,22 @@ public final class GhostTouch implements Toucher {
     }
 
     // ------------------------------------------------------------------ giao diện chung
+
+    /** Một vùng "vuốt tâm" (toạ độ + bán kính px của màn hình đang hiển thị) cùng thông số lọc. */
+    static final class Zone {
+        final float cx, cy, r;
+        final int smooth, gainPct;
+        final float deadPx;
+
+        Zone(float cx, float cy, float r, int smooth, int gainPct, float deadPx) {
+            this.cx = cx;
+            this.cy = cy;
+            this.r = r;
+            this.smooth = smooth;
+            this.gainPct = gainPct;
+            this.deadPx = deadPx;
+        }
+    }
 
     /** Nơi bơm MotionEvent vào hệ thống (tách ra để dễ thử). action đã mã hoá sẵn (POINTER_INDEX << 8). */
     interface Injector {
@@ -463,7 +475,6 @@ public final class GhostTouch implements Toucher {
      */
     static final class Takeover implements Toucher, Runnable {
         static final int GHOST = -1; // "khoá" của ngón macro (ngón thật dùng khoá = số slot)
-        static final int DRAG = -2;  // "khoá" của ngón vuốt tâm
         static final int A_DOWN = 0, A_UP = 1, A_MOVE = 2, A_PDOWN = 5, A_PUP = 6;
         static final int EVIOCGRAB = 0x40044590; // _IOW('E', 0x90, int)
 
@@ -494,6 +505,11 @@ public final class GhostTouch implements Toucher {
         private boolean grabBroken = false;
         private int injFail = 0;
 
+        // ---- VUỐT TÂM: ngón thật đặt xuống TRONG một vùng tròn thì quỹ đạo của nó được lọc ([AimFilter]) trước khi bơm lại
+        private Zone[] zones = new Zone[0];
+        private final AimFilter[] aim = new AimFilter[32]; // theo slot của ngón thật
+        private Thread ticker = null;
+
         volatile boolean alive = true;
         volatile String lastError = "";
 
@@ -509,7 +525,7 @@ public final class GhostTouch implements Toucher {
             rawX = new int[nSlots];
             rawY = new int[nSlots];
             tid = new int[nSlots];
-            fingers = new Fingers(dev.x, dev.y, -1, -1, nSlots);
+            fingers = new Fingers(dev.x, dev.y, -1, nSlots);
         }
 
         // ---- cấu hình từ app: early = đang ở chế độ chạy macro (giành cảm ứng + bơm hợp nhất)
@@ -584,6 +600,7 @@ public final class GhostTouch implements Toucher {
             started = false;
             dirty = false;
             cur = 0;
+            java.util.Arrays.fill(aim, null);
             fingers.reset();
             for (int i = 0; i < nSlots; i++) {
                 act[i] = false;
@@ -622,14 +639,17 @@ public final class GhostTouch implements Toucher {
                         int len = fin.read(buf);
                         if (len <= 0) break;
                         ByteBuffer bb = ByteBuffer.wrap(buf, 0, len - (len % evSize)).order(ByteOrder.LITTLE_ENDIAN);
-                        while (bb.remaining() >= evSize) {
-                            bb.position(bb.position() + (evSize - 8));
-                            int type = bb.getShort() & 0xFFFF;
-                            int code = bb.getShort() & 0xFFFF;
-                            int value = bb.getInt();
-                            feed(type, code, value);
+                        // giữ khoá suốt cả lô sự kiện để luồng "lắng" của vuốt tâm không chen vào giữa một khung dở
+                        synchronized (lock) {
+                            while (bb.remaining() >= evSize) {
+                                bb.position(bb.position() + (evSize - 8));
+                                int type = bb.getShort() & 0xFFFF;
+                                int code = bb.getShort() & 0xFFFF;
+                                int value = bb.getInt();
+                                feed(type, code, value);
+                            }
+                            flush(); // gộp mọi khung đã đọc được thành 1 lần bơm (trạng thái mới nhất)
                         }
-                        flush(); // gộp mọi khung đã đọc được thành 1 lần bơm (trạng thái mới nhất)
                     }
                 } catch (Throwable t) {
                     lastError = String.valueOf(t);
@@ -778,6 +798,7 @@ public final class GhostTouch implements Toucher {
         }
 
         private void removeAt(int idx) throws Exception {
+            if (keys[idx] >= 0 && keys[idx] < aim.length) aim[keys[idx]] = null;
             if (n == 1) emit(A_UP); else emit(A_PUP | (idx << 8));
             for (int i = idx; i < n - 1; i++) {
                 keys[i] = keys[i + 1];
@@ -791,7 +812,74 @@ public final class GhostTouch implements Toucher {
 
         private void addAllReal() throws Exception {
             for (int s = 0; s < nSlots; s++) {
-                if (real(s) && indexOfKey(s) < 0) addPointer(s, screen(s, true), screen(s, false));
+                if (real(s) && indexOfKey(s) < 0) {
+                    float x = screen(s, true), y = screen(s, false);
+                    aim[s] = null;
+                    Zone z = pre ? zoneAt(x, y) : null; // chỉ vuốt tâm khi đang chạy macro (đã "tiếp quản sớm")
+                    if (z != null) aim[s] = new AimFilter(x, y, z.smooth, z.gainPct, z.deadPx, System.nanoTime());
+                    addPointer(s, x, y);
+                }
+            }
+        }
+
+        private Zone zoneAt(float x, float y) {
+            Zone[] zs = zones;
+            for (int i = zs.length - 1; i >= 0; i--) {
+                Zone z = zs[i];
+                double dx = x - z.cx, dy = y - z.cy;
+                if (dx * dx + dy * dy <= (double) z.r * z.r) return z;
+            }
+            return null;
+        }
+
+        private boolean anyAim() {
+            for (int i = 0; i < n; i++) if (keys[i] >= 0 && keys[i] < aim.length && aim[keys[i]] != null) return true;
+            return false;
+        }
+
+        /** Đặt danh sách vùng vuốt tâm (rỗng = tắt). Ngón đang được lọc dở vẫn giữ thông số cũ cho tới khi nhấc. */
+        void setZones(Zone[] z) {
+            synchronized (lock) {
+                zones = z == null ? new Zone[0] : z;
+                if (zones.length > 0 && ticker == null) {
+                    Thread t = new Thread(new Runnable() {
+                        @Override
+                        public void run() {
+                            tickLoop();
+                        }
+                    }, "aim-settle");
+                    t.setDaemon(true);
+                    ticker = t;
+                    t.start();
+                }
+            }
+        }
+
+        /**
+         * Khi ngón dừng lại, màn hình cảm ứng thường ngừng báo -> bộ lọc không có mẫu mới để "lắng" về đúng chỗ.
+         * Luồng này gọi đồng bộ lại đều đặn (~8ms) trong lúc còn ngón đang được lọc.
+         */
+        private void tickLoop() {
+            while (alive) {
+                try {
+                    Thread.sleep(8);
+                } catch (InterruptedException ignored) {
+                }
+                synchronized (lock) {
+                    if (!started || n == 0 || !anyAim()) continue;
+                    try {
+                        syncLocked();
+                    } catch (Throwable t) {
+                        onInjectFailLocked(t);
+                    }
+                }
+            }
+        }
+
+        /** Không có ngón nào (thật lẫn macro) đang được bơm / đặt trên màn hình. */
+        boolean isIdle() {
+            synchronized (lock) {
+                return idleLocked();
             }
         }
 
@@ -799,14 +887,20 @@ public final class GhostTouch implements Toucher {
         private void syncLocked() throws Exception {
             for (int i = n - 1; i >= 0; i--) {
                 int k = keys[i];
-                if (k >= 0 && (!real(k) || tids[i] != tid[k])) removeAt(i);
+                if (k != GHOST && (!real(k) || tids[i] != tid[k])) removeAt(i);
             }
             addAllReal();
             boolean moved = false;
             for (int i = 0; i < n; i++) {
                 int k = keys[i];
-                if (k < 0) continue;
+                if (k == GHOST) continue;
                 float x = screen(k, true), y = screen(k, false);
+                AimFilter af = k < aim.length ? aim[k] : null;
+                if (af != null) {
+                    af.update(x, y, System.nanoTime());
+                    x = Math.max(0f, Math.min(w - 1f, af.x()));
+                    y = Math.max(0f, Math.min(h - 1f, af.y()));
+                }
                 if (Math.abs(x - xs[i]) >= 0.5f || Math.abs(y - ys[i]) >= 0.5f) {
                     xs[i] = x;
                     ys[i] = y;
@@ -815,57 +909,6 @@ public final class GhostTouch implements Toucher {
             }
             if (moved && n > 0) emit(A_MOVE);
             if (n == 0) started = false;
-        }
-
-        @Override
-        public void dragBegin(int x, int y, int rot, int w, int h) throws Exception {
-            synchronized (lock) {
-                this.rot = rot;
-                this.w = Math.max(1, w);
-                this.h = Math.max(1, h);
-                try {
-                    if (!started) {
-                        started = true;
-                        addAllReal();
-                    }
-                    int di = indexOfKey(DRAG);
-                    if (di >= 0) removeAt(di);
-                    addPointer(DRAG, x, y);
-                } catch (Throwable t) {
-                    onInjectFailLocked(t);
-                    throw new Exception(t);
-                }
-            }
-        }
-
-        @Override
-        public void dragMove(int x, int y) throws Exception {
-            synchronized (lock) {
-                int di = indexOfKey(DRAG);
-                if (di < 0) return;
-                xs[di] = x;
-                ys[di] = y;
-                try {
-                    emit(A_MOVE);
-                } catch (Throwable t) {
-                    onInjectFailLocked(t);
-                    throw new Exception(t);
-                }
-            }
-        }
-
-        @Override
-        public void dragEnd() throws Exception {
-            synchronized (lock) {
-                try {
-                    int di = indexOfKey(DRAG);
-                    if (di >= 0) removeAt(di);
-                    if (n == 0) started = false;
-                    else syncLocked();
-                } catch (Throwable t) {
-                    onInjectFailLocked(t);
-                }
-            }
         }
 
         @Override
@@ -972,37 +1015,17 @@ public final class GhostTouch implements Toucher {
     private final FileOutputStream out;
     private final Tracker tracker;
     private final int ghostSlot;
-    private final int dragSlot;
     private int tidCounter = 0;
-    private volatile boolean dragging = false;
-    private volatile long lastDragAt = 0L;
-    private final Object dragLock = new Object();
 
     GhostTouch(Dev dev, String writePath, boolean is64) throws Exception {
         this.dev = dev;
         this.is64 = is64;
         this.ghostSlot = dev.slot.max; // slot cuối: ít khi trùng với ngón thật
-        this.dragSlot = dev.slot.max >= 2 ? dev.slot.max - 1 : dev.slot.max; // ngón vuốt tâm dùng slot riêng (vẫn bấm macro được cùng lúc)
         this.out = new FileOutputStream(writePath);
-        this.tracker = new Tracker(writePath, is64, ghostSlot, dragSlot, dev.slot.max + 1, dev.x, dev.y);
+        this.tracker = new Tracker(writePath, is64, ghostSlot, dev.slot.max + 1, dev.x, dev.y);
         Thread t = new Thread(tracker, "ghost-tracker");
         t.setDaemon(true);
         t.start();
-        // Chốt an toàn: app ngừng gửi lệnh vuốt (crash / mất mạng) thì tự nhả ngón vuốt, tránh kẹt cảm ứng
-        Thread wd = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                while (true) {
-                    try {
-                        Thread.sleep(250);
-                        if (dragging && System.currentTimeMillis() - lastDragAt > 1500) dragEnd();
-                    } catch (Throwable ignored) {
-                    }
-                }
-            }
-        }, "drag-watchdog");
-        wd.setDaemon(true);
-        wd.start();
     }
 
     private int nextTid() {
@@ -1021,74 +1044,6 @@ public final class GhostTouch implements Toucher {
     @Override
     public void config(boolean early, int rot, int w, int h) {
         // chế độ ghi thẳng /dev/input không cần cấu hình
-    }
-
-    @Override
-    public void dragBegin(int x, int y, int rot, int w, int h) throws Exception {
-        synchronized (dragLock) {
-            int[] raw = mapToRaw(dev, x, y, rot, w, h);
-            int tid = nextTid();
-            int restore = tracker.lastRealSlot;
-            Frame d = new Frame(is64);
-            d.add(EV_ABS, ABS_MT_SLOT, dragSlot);
-            d.add(EV_ABS, ABS_MT_TRACKING_ID, tid);
-            if (dev.btnTouch) d.add(EV_KEY, BTN_TOUCH, 1);
-            if (dev.toolFinger) d.add(EV_KEY, BTN_TOOL_FINGER, 1);
-            d.add(EV_ABS, ABS_MT_POSITION_X, raw[0]);
-            d.add(EV_ABS, ABS_MT_POSITION_Y, raw[1]);
-            if (dev.pressure != null) d.add(EV_ABS, ABS_MT_PRESSURE, mid(dev.pressure, 3));
-            if (dev.major != null) d.add(EV_ABS, ABS_MT_TOUCH_MAJOR, mid(dev.major, 10));
-            if (dev.width != null) d.add(EV_ABS, ABS_MT_WIDTH_MAJOR, mid(dev.width, 10));
-            d.add(EV_ABS, ABS_MT_SLOT, restore);
-            d.add(EV_SYN, SYN_REPORT, 0);
-            out.write(d.bytes());
-            out.flush();
-            dragRot = rot;
-            dragW = w;
-            dragH = h;
-            dragging = true;
-            lastDragAt = System.currentTimeMillis();
-        }
-    }
-
-    private int dragRot = 0, dragW = 1, dragH = 1;
-
-    @Override
-    public void dragMove(int x, int y) throws Exception {
-        synchronized (dragLock) {
-            if (!dragging) return;
-            int[] raw = mapToRaw(dev, x, y, dragRot, dragW, dragH);
-            int restore = tracker.lastRealSlot;
-            Frame d = new Frame(is64);
-            d.add(EV_ABS, ABS_MT_SLOT, dragSlot);
-            d.add(EV_ABS, ABS_MT_POSITION_X, raw[0]);
-            d.add(EV_ABS, ABS_MT_POSITION_Y, raw[1]);
-            d.add(EV_ABS, ABS_MT_SLOT, restore);
-            d.add(EV_SYN, SYN_REPORT, 0);
-            out.write(d.bytes());
-            out.flush();
-            lastDragAt = System.currentTimeMillis();
-        }
-    }
-
-    @Override
-    public void dragEnd() throws Exception {
-        synchronized (dragLock) {
-            if (!dragging) return;
-            dragging = false;
-            boolean trk = tracker.ok;
-            Frame u = new Frame(is64);
-            u.add(EV_ABS, ABS_MT_SLOT, dragSlot);
-            u.add(EV_ABS, ABS_MT_TRACKING_ID, -1);
-            if (trk && tracker.realActive() == 0) {
-                if (dev.btnTouch) u.add(EV_KEY, BTN_TOUCH, 0);
-                if (dev.toolFinger) u.add(EV_KEY, BTN_TOOL_FINGER, 0);
-            }
-            u.add(EV_ABS, ABS_MT_SLOT, tracker.lastRealSlot);
-            u.add(EV_SYN, SYN_REPORT, 0);
-            out.write(u.bytes());
-            out.flush();
-        }
     }
 
     @Override
@@ -1120,7 +1075,7 @@ public final class GhostTouch implements Toucher {
         u.add(EV_ABS, ABS_MT_SLOT, ghostSlot);
         u.add(EV_ABS, ABS_MT_TRACKING_ID, -1);
         // Chỉ hạ BTN_TOUCH khi CHẮC CHẮN không còn ngón thật nào; nếu không Android sẽ coi ngón thật là "lơ lửng" và huỷ nó.
-        if (trk && tracker.realActive() == 0 && !dragging) {
+        if (trk && tracker.realActive() == 0) {
             if (dev.btnTouch) u.add(EV_KEY, BTN_TOUCH, 0);
             if (dev.toolFinger) u.add(EV_KEY, BTN_TOOL_FINGER, 0);
         }
@@ -1131,6 +1086,76 @@ public final class GhostTouch implements Toucher {
     }
 
     // ------------------------------------------------------------------ main
+
+    static volatile Dev DEV = null;
+    static volatile Takeover TK = null;          // bộ tiếp quản (có sẵn từ đầu hoặc được dựng khi bật vuốt tâm)
+    static volatile Toucher CUR = null;          // bộ chạm đang dùng cho lệnh T
+    static final int[] LAST_P = {0, 0, 1, 1};    // lệnh P gần nhất: early, rot, w, h
+
+    /**
+     * Bật vuốt tâm cần "tiếp quản" ngón thật (đọc + giành độc quyền + bơm lại) để sửa được quỹ đạo.
+     * Máy ghi thẳng /dev/input được (chế độ WRITE) thì dựng thêm bộ tiếp quản ở đây và dùng nó thay cho ghi thẳng
+     * (macro cũng đi qua cùng 1 luồng nên không xung đột). Trả về null nếu OK, ngược lại là lý do.
+     */
+    static synchronized String ensureTakeover() {
+        if (TK != null) {
+            CUR = TK;
+            return null;
+        }
+        Dev d = DEV;
+        if (d == null) return "chưa có màn hình cảm ứng";
+        try {
+            new FileInputStream(d.path).close(); // đọc được không?
+            Injector inj = new ReflectInjector();
+            final Takeover tk = new Takeover(d, d.path, inj, is64());
+            Thread t = new Thread(tk, "takeover-reader");
+            t.setDaemon(true);
+            t.start();
+            Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    tk.shutdown();
+                }
+            }));
+            tk.config(LAST_P[0] == 1, LAST_P[1], LAST_P[2], LAST_P[3]);
+            TK = tk;
+            CUR = tk;
+            return null;
+        } catch (Throwable t) {
+            return String.valueOf(t.getMessage() != null ? t.getMessage() : t);
+        }
+    }
+
+    /** "Z n cx cy r smooth gain deadPx ..." (n vùng, mỗi vùng 6 số). */
+    static void handleZones(String[] p) {
+        int n = 0;
+        try {
+            n = Integer.parseInt(p[1]);
+        } catch (Throwable ignored) {
+        }
+        java.util.List<Zone> zs = new ArrayList<>();
+        for (int i = 0; i < n && 2 + i * 6 + 5 < p.length; i++) {
+            int o = 2 + i * 6;
+            try {
+                zs.add(new Zone(Float.parseFloat(p[o]), Float.parseFloat(p[o + 1]), Float.parseFloat(p[o + 2]),
+                        Integer.parseInt(p[o + 3]), Integer.parseInt(p[o + 4]), Float.parseFloat(p[o + 5])));
+            } catch (Throwable ignored) {
+            }
+        }
+        if (zs.isEmpty()) {
+            Takeover tk = TK;
+            if (tk != null) tk.setZones(null);
+            report("ASSIST 0");
+            return;
+        }
+        String why = ensureTakeover();
+        if (why != null) {
+            report("ASSIST FAIL " + why);
+            return;
+        }
+        TK.setZones(zs.toArray(new Zone[0]));
+        report("ASSIST 1 " + zs.size());
+    }
 
     public static void main(String[] args) {
         PrintStream so = new PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), true);
@@ -1146,6 +1171,7 @@ public final class GhostTouch implements Toucher {
                 so.println("FAIL màn hình cảm ứng chỉ có 1 slot");
                 return;
             }
+            DEV = d;
             Toucher direct = null;
             String why = "";
             try {
@@ -1171,6 +1197,7 @@ public final class GhostTouch implements Toucher {
                         }
                     }));
                     direct = tk;
+                    TK = tk;
                     so.println("READY " + d.path + " " + (d.x.max + 1) + " " + (d.y.max + 1) + " 0 TAKEOVER");
                 } catch (Throwable t2) {
                     so.println("FAIL không ghi được " + d.path + " (" + why + "); tiếp quản lỗi: " + t2.getMessage());
@@ -1178,6 +1205,7 @@ public final class GhostTouch implements Toucher {
                 }
             }
             g = direct;
+            CUR = g;
         } catch (Throwable t) {
             so.println("FAIL " + t);
             return;
@@ -1196,32 +1224,27 @@ public final class GhostTouch implements Toucher {
                 String[] p = line.split("\\s+");
                 if (p[0].equals("P") && p.length >= 5) {
                     try {
-                        g.config(p[1].equals("1"), Integer.parseInt(p[2]), Integer.parseInt(p[3]), Integer.parseInt(p[4]));
+                        boolean early = p[1].equals("1");
+                        int rot = Integer.parseInt(p[2]), w = Integer.parseInt(p[3]), h = Integer.parseInt(p[4]);
+                        LAST_P[0] = early ? 1 : 0;
+                        LAST_P[1] = rot;
+                        LAST_P[2] = w;
+                        LAST_P[3] = h;
+                        CUR.config(early, rot, w, h);
+                        Takeover tk = TK;
+                        if (tk != null && CUR != tk) tk.config(early, rot, w, h);
                     } catch (Throwable ignored) {
                     }
-                } else if (p[0].equals("B") && p.length >= 6) {
+                } else if (p[0].equals("Z") && p.length >= 2) {
                     try {
-                        g.dragBegin(Integer.parseInt(p[1]), Integer.parseInt(p[2]), Integer.parseInt(p[3]),
-                                Integer.parseInt(p[4]), Integer.parseInt(p[5]));
+                        handleZones(p);
                     } catch (Throwable t) {
-                        so.println("E 0 " + t);
-                    }
-                } else if (p[0].equals("V") && p.length >= 3) {
-                    try {
-                        g.dragMove(Integer.parseInt(p[1]), Integer.parseInt(p[2]));
-                    } catch (Throwable t) {
-                        so.println("E 0 " + t);
-                    }
-                } else if (p[0].equals("N")) {
-                    try {
-                        g.dragEnd();
-                    } catch (Throwable t) {
-                        so.println("E 0 " + t);
+                        so.println("ASSIST FAIL " + t);
                     }
                 } else if (p[0].equals("T") && p.length >= 8) {
                     String id = p[1];
                     try {
-                        g.tap(Integer.parseInt(p[2]), Integer.parseInt(p[3]), Integer.parseInt(p[4]),
+                        CUR.tap(Integer.parseInt(p[2]), Integer.parseInt(p[3]), Integer.parseInt(p[4]),
                                 Integer.parseInt(p[5]), Integer.parseInt(p[6]), Integer.parseInt(p[7]));
                         so.println("D " + id);
                     } catch (Throwable t) {
@@ -1238,13 +1261,6 @@ public final class GhostTouch implements Toucher {
 /** Một "bộ chạm": ghi thẳng /dev/input (GhostTouch) hoặc tiếp quản ngón thật (GhostTouch.Takeover). */
 interface Toucher {
     void tap(int x, int y, int rot, int w, int h, int holdMs) throws Exception;
-
-    /** Vuốt liên tục: đặt ngón vuốt xuống (x,y) -> di chuyển -> nhấc. Dùng slot / khoá riêng, không đụng ngón chạm macro. */
-    void dragBegin(int x, int y, int rot, int w, int h) throws Exception;
-
-    void dragMove(int x, int y) throws Exception;
-
-    void dragEnd() throws Exception;
 
     /** Cấu hình từ app: [early] = tiếp quản sớm; [rot]/[w]/[h] = hướng + kích thước màn hình hiện tại. */
     void config(boolean early, int rot, int w, int h);

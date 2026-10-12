@@ -5,7 +5,7 @@ import android.os.Build
 import org.json.JSONArray
 import org.json.JSONObject
 
-enum class Kind { NUM, MAIN }
+enum class Kind { NUM, MAIN, AIM }
 
 /** Cách app tạo cú chạm. */
 const val TAP_ACC = 0 // dịch vụ Trợ năng (dispatchGesture)
@@ -20,6 +20,7 @@ const val TRIG_HOLD = 2     // giữ tay: chuỗi lặp đi lặp lại, thả t
  * Một nút trên màn hình.
  * - NUM : nút macro số 1, 2, 3...  (là vị trí sẽ được "bấm"; số được đánh RIÊNG trong từng main)
  * - MAIN: nút trung tâm main1, main2... (nút bạn bấm để kích hoạt chuỗi)
+ * - AIM : nút "Vuốt tâm" — vòng tròn chạm xuyên; ngón đặt xuống trong vòng rồi vuốt đi đâu thì quỹ đạo được làm mượt / chống rung / tăng lực
  */
 data class MacroButton(
     val id: Int,
@@ -36,8 +37,16 @@ data class MacroButton(
     var name: String = "",  // tên tuỳ chỉnh hiện trên nút (rỗng = hiện số / mainN mặc định)
     // Vị trí nhớ RIÊNG cho từng hướng màn hình (-1 = chưa đặt). x,y ở trên là vị trí của hướng đang hiển thị.
     var pX: Int = -1, var pY: Int = -1,   // hướng dọc
-    var lX: Int = -1, var lY: Int = -1    // hướng ngang
+    var lX: Int = -1, var lY: Int = -1,   // hướng ngang
+    // chỉ AIM (Vuốt tâm)
+    var aimSmooth: Int = AIM_SMOOTH_DEF,  // 0..100: độ mượt (0 = không lọc)
+    var aimDead: Int = AIM_DEAD_DEF,      // 0..100: chống rung tay (vùng chết, 100 = ~24dp)
+    var aimGain: Int = AIM_GAIN_DEF       // 100..400 (%): tăng lực vuốt
 )
+
+const val AIM_SMOOTH_DEF = 60
+const val AIM_DEAD_DEF = 25
+const val AIM_GAIN_DEF = 130
 
 object Store {
     private fun p(ctx: Context) =
@@ -97,21 +106,6 @@ object Store {
     fun setCrossOn(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("crossOn", v).apply()
     fun setCrossSize(ctx: Context, v: Int) = p(ctx).edit().putInt("crossSize", v).apply()
     fun setCrossAlpha(ctx: Context, v: Int) = p(ctx).edit().putInt("crossAlpha", v).apply()
-    // ---- cụm nút vuốt tâm (vị trí lưu theo ‰ màn hình để đúng cả khi xoay ngang/dọc)
-    fun padOn(ctx: Context) = p(ctx).getBoolean("padOn", false)
-    fun setPadOn(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("padOn", v).apply()
-    fun padInt(ctx: Context, key: String, def: Int) = p(ctx).getInt("pad_$key", def)
-    fun setPadInt(ctx: Context, key: String, v: Int) = p(ctx).edit().putInt("pad_$key", v).apply()
-    fun padCx(ctx: Context) = padInt(ctx, "cx", 160)    // tâm cụm nút (‰ chiều rộng)
-    fun padCy(ctx: Context) = padInt(ctx, "cy", 650)    // (‰ chiều cao)
-    fun padAx(ctx: Context) = padInt(ctx, "ax", 780)    // điểm bắt đầu vuốt (vùng xoay camera)
-    fun padAy(ctx: Context) = padInt(ctx, "ay", 500)
-    fun padSize(ctx: Context) = padInt(ctx, "size", 150)   // dp
-    fun padAlpha(ctx: Context) = padInt(ctx, "alpha", 70)  // %
-    fun padDirs(ctx: Context) = padInt(ctx, "dirs", 8)     // 4..8 hướng
-    fun padSpeed(ctx: Context) = padInt(ctx, "speed", 250) // dp / giây
-    fun padReach(ctx: Context) = padInt(ctx, "reach", 120) // dp: vuốt xa nhất trước khi đặt lại về điểm bắt đầu
-
     fun setRingOn(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("ringOn", v).apply()
     fun setRingSize(ctx: Context, v: Int) = p(ctx).edit().putInt("ringSize", v).apply()
     fun setRingStroke(ctx: Context, v: Int) = p(ctx).edit().putInt("ringStroke", v).apply()
@@ -151,6 +145,11 @@ object Store {
             o.put("pY", b.pY)
             o.put("lX", b.lX)
             o.put("lY", b.lY)
+            if (b.kind == Kind.AIM) {
+                o.put("aimSmooth", b.aimSmooth)
+                o.put("aimDead", b.aimDead)
+                o.put("aimGain", b.aimGain)
+            }
             arr.put(o)
         }
         return arr
@@ -160,7 +159,11 @@ object Store {
         val out = mutableListOf<MacroButton>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
-            val kind = if (o.optString("kind") == "MAIN") Kind.MAIN else Kind.NUM
+            val kind = when (o.optString("kind")) {
+                "MAIN" -> Kind.MAIN
+                "AIM" -> Kind.AIM
+                else -> Kind.NUM
+            }
             out.add(
                 MacroButton(
                     id = o.optInt("id", i + 1),
@@ -168,7 +171,7 @@ object Store {
                     number = o.optInt("number", i + 1),
                     x = o.optInt("x", 300),
                     y = o.optInt("y", 300),
-                    sizeDp = o.optInt("size", if (kind == Kind.MAIN) 72 else 56),
+                    sizeDp = o.optInt("size", if (kind == Kind.MAIN) 72 else if (kind == Kind.AIM) 96 else 56),
                     alphaPct = o.optInt("alpha", 85).coerceIn(0, 100),
                     delayMs = o.optInt("delay", 120),
                     mainNo = o.optInt("main", 0),
@@ -179,7 +182,10 @@ object Store {
                     pX = o.optInt("pX", -1),
                     pY = o.optInt("pY", -1),
                     lX = o.optInt("lX", -1),
-                    lY = o.optInt("lY", -1)
+                    lY = o.optInt("lY", -1),
+                    aimSmooth = o.optInt("aimSmooth", AIM_SMOOTH_DEF).coerceIn(0, 100),
+                    aimDead = o.optInt("aimDead", AIM_DEAD_DEF).coerceIn(0, 100),
+                    aimGain = o.optInt("aimGain", AIM_GAIN_DEF).coerceIn(100, 400)
                 )
             )
         }
