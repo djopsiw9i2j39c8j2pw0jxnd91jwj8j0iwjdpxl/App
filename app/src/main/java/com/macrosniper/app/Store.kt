@@ -93,6 +93,9 @@ object Store {
     }
 
     // ---- Tâm ảo (crosshair) + vòng tròn quanh tâm: cài đặt chung, không gắn với từng macro
+    /** Cỡ giao diện nổi (bảng, bong bóng, danh sách) theo %, nhân thêm lên mức tự co theo dpi của máy. */
+    fun uiScale(ctx: Context) = p(ctx).getInt("uiScale", 100).coerceIn(50, 130)
+    fun setUiScale(ctx: Context, v: Int) = p(ctx).edit().putInt("uiScale", v.coerceIn(50, 130)).apply()
     fun crossOn(ctx: Context) = p(ctx).getBoolean("crossOn", false)
     fun sliderStep(ctx: Context, key: String) = p(ctx).getInt("sliderStep_$key", 10) // bước nút -/+ của từng thanh trượt (1 hoặc 10)
     fun setSliderStep(ctx: Context, key: String, v: Int) = p(ctx).edit().putInt("sliderStep_$key", v).apply()

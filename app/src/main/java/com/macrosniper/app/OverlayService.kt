@@ -196,6 +196,7 @@ class OverlayService : Service() {
         instance = this
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         density = resources.displayMetrics.density
+        updateUiScale()
         handler.removeCallbacks(watchdog)
         handler.postDelayed(watchdog, 1000)
         startNetWatch()
@@ -272,6 +273,7 @@ class OverlayService : Service() {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         density = resources.displayMetrics.density
+        updateUiScale()
         if (mode != Mode.OFF) {
             // Cấu hình đổi không phải lúc nào cũng là xoay màn hình (chế độ tối, cỡ chữ, bàn phím...).
             // Chỉ dựng lại khi cỡ màn hình thật sự đổi.
@@ -411,6 +413,23 @@ class OverlayService : Service() {
     // ---------------------------------------------------------------- tiện ích
 
     private fun dp(v: Number): Int = (v.toFloat() * density + 0.5f).toInt()
+
+    /** Hệ số co giao diện nổi = tự co theo độ rộng màn hình (dpi mỗi máy một khác) x cỡ người dùng chỉnh. */
+    private var uiK = 1f
+
+    /** Kích thước giao diện nổi (bảng, bong bóng, danh sách): dp x [uiK]. Nút macro / tâm / vòng vẫn dùng [dp] (người dùng tự đặt cỡ). */
+    private fun ui(v: Number): Int = (v.toFloat() * density * uiK + 0.5f).toInt()
+
+    /**
+     * Máy để dpi cao (hoặc màn hình hẹp theo dp) thì giao diện cỡ "dp" trông to choán màn hình. Co theo cạnh ngắn của màn hình
+     * so với máy chuẩn 411dp (chỉ co, không phóng to), rồi nhân với cỡ người dùng chỉnh trên bảng (50-130%).
+     */
+    private fun updateUiScale() {
+        val s = screenSize()
+        val shortDp = minOf(s.first, s.second) / maxOf(density, 0.5f)
+        val auto = (shortDp / 411f).coerceIn(0.6f, 1f)
+        uiK = auto * Store.uiScale(this) / 100f
+    }
 
     private fun screenSize(): Pair<Int, Int> {
         try {
@@ -941,14 +960,14 @@ class OverlayService : Service() {
             setPanelFocusable(false)
             onChange(it)
         }
-        row.addView(sw, LinearLayout.LayoutParams(dp(46), dp(26)))
+        row.addView(sw, LinearLayout.LayoutParams(ui(46), ui(26)))
         return row
     }
 
     private fun buildCrossSection(c: LinearLayout) {
         val lpRow = {
             val l = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            l.topMargin = dp(6)
+            l.topMargin = ui(6)
             l
         }
         c.addView(toggleRow("Tâm ảo", Store.crossOn(this)) {
@@ -1061,7 +1080,7 @@ class OverlayService : Service() {
         val pr = panelRoot
         val pl = panelLp
         if (pr != null && pl != null && mode == Mode.EDIT) {
-            val pRect = Rect(pl.x, pl.y, pl.x + pl.width, pl.y + maxOf(pr.height, dp(80)))
+            val pRect = Rect(pl.x, pl.y, pl.x + pl.width, pl.y + maxOf(pr.height, ui(80)))
             if (Rect.intersects(r, pRect)) {
                 setPanelFocusable(false)
                 refront(pr, pl)
@@ -1317,10 +1336,10 @@ class OverlayService : Service() {
     }
 
     private fun addBubble(sw: Int, sh: Int) {
-        val size = dp(54)
+        val size = ui(54)
         val lp = baseLp(size, size, true)
         val saved = Store.bubblePos(this, sw > sh)
-        lp.x = (saved?.first ?: dp(10)).coerceIn(0, maxOf(0, sw - size))
+        lp.x = (saved?.first ?: ui(10)).coerceIn(0, maxOf(0, sw - size))
         lp.y = (saved?.second ?: (sh / 3)).coerceIn(0, maxOf(0, sh - size))
         val v = BubbleView(this, logoBmp)
         v.editing = mode == Mode.EDIT
@@ -1328,7 +1347,7 @@ class OverlayService : Service() {
             DragListener(
                 lp = lp,
                 wm = wm,
-                slop = dp(6),
+                slop = ui(6),
                 limit = {
                     val s = screenSize()
                     Pair(s.first - size, s.second - size)
@@ -1440,7 +1459,7 @@ class OverlayService : Service() {
     private fun label(text: String, sp: Float, color: Int, bold: Boolean = false): TextView {
         val t = TextView(this)
         t.text = text
-        t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, sp)
+        t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, sp * uiK)
         t.setTextColor(color)
         if (bold) t.setTypeface(t.typeface, android.graphics.Typeface.BOLD)
         return t
@@ -1449,12 +1468,12 @@ class OverlayService : Service() {
     private fun actionBtn(text: String, filled: Boolean, danger: Boolean = false, onClick: () -> Unit): TextView {
         val t = label(text, 13f, if (filled) Color.parseColor("#0B120A") else if (danger) Theme.DANGER else Theme.ACCENT, true)
         t.gravity = Gravity.CENTER
-        t.setPadding(dp(8), 0, dp(8), 0)
+        t.setPadding(ui(8), 0, ui(8), 0)
         val stroke = if (danger) Theme.DANGER else Theme.STROKE
         t.background = if (filled) {
-            roundedBg(Theme.ACCENT, dp(12).toFloat())
+            roundedBg(Theme.ACCENT, ui(12).toFloat())
         } else {
-            roundedBg(Theme.FIELD, dp(12).toFloat(), stroke, dp(1))
+            roundedBg(Theme.FIELD, ui(12).toFloat(), stroke, ui(1))
         }
         t.isClickable = true
         t.setOnClickListener {
@@ -1471,38 +1490,38 @@ class OverlayService : Service() {
     }
 
     private fun addPanel(sw: Int, sh: Int) {
-        val width = minOf(sw - dp(16), dp(400))
+        val width = minOf(sw - ui(16), ui(400))
         panelW = width
         val lp = baseLp(width, WindowManager.LayoutParams.WRAP_CONTENT, true)
         lp.x =if (panelX >= 0) panelX.coerceIn(0, maxOf(0, sw - width)) else (sw - width) / 2
-        lp.y = if (panelY >= 0) panelY.coerceIn(0, maxOf(0, sh - dp(80))) else dp(8)
+        lp.y = if (panelY >= 0) panelY.coerceIn(0, maxOf(0, sh - ui(80))) else ui(8)
         lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
 
         val root = PanelLayout(this)
         root.orientation = LinearLayout.VERTICAL
-        root.background = roundedBg(Theme.PANEL, dp(20).toFloat(), Theme.STROKE, dp(1))
-        root.setPadding(dp(12), dp(8), dp(12), dp(12))
+        root.background = roundedBg(Theme.PANEL, ui(20).toFloat(), Theme.STROKE, ui(1))
+        root.setPadding(ui(12), ui(8), ui(12), ui(12))
 
         // ---- thanh tiêu đề (kéo để di chuyển bảng)
         val header = LinearLayout(this)
         header.orientation = LinearLayout.HORIZONTAL
         header.gravity = Gravity.CENTER_VERTICAL
-        header.setPadding(0, 0, 0, dp(6))
+        header.setPadding(0, 0, 0, ui(6))
 
         val logo = ImageView(this)
         logo.setImageResource(R.drawable.logo_bubble)
-        header.addView(logo, LinearLayout.LayoutParams(dp(28), dp(28)))
+        header.addView(logo, LinearLayout.LayoutParams(ui(28), ui(28)))
 
         val title = label("MACRO TOUCH", 15f, Theme.ACCENT, true)
         title.letterSpacing = 0.06f
-        title.setPadding(dp(8), 0, 0, 0)
+        title.setPadding(ui(8), 0, 0, 0)
         title.maxLines = 1
         title.ellipsize = android.text.TextUtils.TruncateAt.END
         header.addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
         val close = label("✕", 16f, Theme.TEXT, true)
         close.gravity = Gravity.CENTER
-        close.background = roundedBg(Color.parseColor("#33FF5A5A"), dp(17).toFloat(), Theme.DANGER, dp(1))
+        close.background = roundedBg(Color.parseColor("#33FF5A5A"), ui(17).toFloat(), Theme.DANGER, ui(1))
         close.setOnClickListener {
             setPanelFocusable(false)
             exitEdit()
@@ -1510,25 +1529,25 @@ class OverlayService : Service() {
         // nút − / + : thu gọn bảng thành 1 thanh / mở lại
         val collapse = label(if (panelCollapsed) "+" else "−", 20f, Theme.TEXT, true)
         collapse.gravity = Gravity.CENTER
-        collapse.background = roundedBg(Theme.FIELD, dp(17).toFloat(), Theme.STROKE, dp(1))
+        collapse.background = roundedBg(Theme.FIELD, ui(17).toFloat(), Theme.STROKE, ui(1))
         collapse.setOnClickListener {
             setPanelFocusable(false)
             setPanelCollapsed(!panelCollapsed)
         }
-        val clp = LinearLayout.LayoutParams(dp(34), dp(34))
-        clp.rightMargin = dp(8)
+        val clp = LinearLayout.LayoutParams(ui(34), ui(34))
+        clp.rightMargin = ui(8)
         header.addView(collapse, clp)
-        header.addView(close, LinearLayout.LayoutParams(dp(34), dp(34)))
+        header.addView(close, LinearLayout.LayoutParams(ui(34), ui(34)))
 
         header.setOnTouchListener(
             DragListener(
                 lp = lp,
                 wm = wm,
-                slop = dp(4),
+                slop = ui(4),
                 target = root,
                 limit = {
                     val s = screenSize()
-                    Pair(s.first - width, s.second - dp(80))
+                    Pair(s.first - width, s.second - ui(80))
                 },
                 onMove = {
                     panelX = lp.x
@@ -1543,7 +1562,7 @@ class OverlayService : Service() {
         )
         root.addView(header)
 
-        val scroll = MaxHeightScroll(this, sh - dp(110))
+        val scroll = MaxHeightScroll(this, sh - ui(110))
         val content = LinearLayout(this)
         content.orientation = LinearLayout.VERTICAL
         scroll.addView(
@@ -1576,7 +1595,7 @@ class OverlayService : Service() {
             refreshPanel()
             if (animate) {
                 root.alpha = 0f
-                root.translationY = -dp(12).toFloat()
+                root.translationY = -ui(12).toFloat()
                 root.animate().alpha(1f).translationY(0f).setDuration(160).start()
             } else {
                 root.alpha = 1f
@@ -1598,8 +1617,8 @@ class OverlayService : Service() {
 
     /** Khi thu gọn: bỏ khoảng trống thừa dưới thanh tiêu đề cho gọn đẹp. */
     private fun applyCollapsePadding(root: View, c: Boolean) {
-        (root as? ViewGroup)?.getChildAt(0)?.setPadding(0, 0, 0, if (c) 0 else dp(6))
-        root.setPadding(dp(12), dp(8), dp(12), if (c) dp(8) else dp(12))
+        (root as? ViewGroup)?.getChildAt(0)?.setPadding(0, 0, 0, if (c) 0 else ui(6))
+        root.setPadding(ui(12), ui(8), ui(12), if (c) ui(8) else ui(12))
     }
 
     /** Thu gọn bảng thành 1 thanh tiêu đề (nhìn rõ màn hình để đặt nút) hoặc mở lại đầy đủ. Chiều ngang giữ nguyên. */
@@ -1656,12 +1675,12 @@ class OverlayService : Service() {
         et.hint = hint
         et.setHintTextColor(Theme.MUTED)
         et.setTextColor(Theme.TEXT)
-        et.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f)
+        et.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f * uiK)
         et.setSingleLine(true)
         et.inputType = type
         et.imeOptions = EditorInfo.IME_ACTION_DONE or EditorInfo.IME_FLAG_NO_EXTRACT_UI
-        et.setPadding(dp(10), 0, dp(10), 0)
-        et.background = roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.STROKE, dp(1))
+        et.setPadding(ui(10), 0, ui(10), 0)
+        et.background = roundedBg(Theme.FIELD, ui(12).toFloat(), Theme.STROKE, ui(1))
         et.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, st: Int, c1: Int, a: Int) {}
             override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c1: Int) {}
@@ -1695,20 +1714,35 @@ class OverlayService : Service() {
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL
-        row.addView(label("Chế độ chạm", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
-        row.addView(actionBtn("Trợ năng", cur == TAP_ACC) { setTapMode(TAP_ACC) }, weighted(dp(36), 0, dp(4)))
-        row.addView(actionBtn("Gỡ lỗi WiFi", cur == TAP_ADB) { setTapMode(TAP_ADB) }, weighted(dp(36), dp(4), 0))
+        row.addView(label("Chế độ chạm", 12f, Theme.MUTED), LinearLayout.LayoutParams(ui(96), ViewGroup.LayoutParams.WRAP_CONTENT))
+        row.addView(actionBtn("Trợ năng", cur == TAP_ACC) { setTapMode(TAP_ACC) }, weighted(ui(36), 0, ui(4)))
+        row.addView(actionBtn("Gỡ lỗi WiFi", cur == TAP_ADB) { setTapMode(TAP_ADB) }, weighted(ui(36), ui(4), 0))
         c.addView(row)
+
+        // cỡ giao diện nổi: chỉnh ngay trên bảng (bước 5%), bảng dựng lại liền để thấy kết quả
+        val sc = Store.uiScale(this)
+        val srow = LinearLayout(this)
+        srow.orientation = LinearLayout.HORIZONTAL
+        srow.gravity = Gravity.CENTER_VERTICAL
+        srow.addView(label("Cỡ giao diện", 12f, Theme.MUTED), LinearLayout.LayoutParams(ui(96), ViewGroup.LayoutParams.WRAP_CONTENT))
+        srow.addView(actionBtn("−", false) { changeUiScale(sc - 5) }, weighted(ui(36), 0, ui(4)))
+        val pct = label("$sc%", 13f, Theme.ACCENT, true)
+        pct.gravity = Gravity.CENTER
+        srow.addView(pct, LinearLayout.LayoutParams(ui(56), ViewGroup.LayoutParams.WRAP_CONTENT))
+        srow.addView(actionBtn("+", false) { changeUiScale(sc + 5) }, weighted(ui(36), ui(4), 0))
+        val sl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        sl.topMargin = ui(6)
+        c.addView(srow, sl)
         if (cur != TAP_ADB) return
 
         val st = label(AdbClient.statusText(), 12f, AdbClient.statusColor(), true)
-        st.setPadding(dp(2), dp(6), dp(2), dp(4))
+        st.setPadding(ui(2), ui(6), ui(2), ui(4))
         c.addView(st)
         if (!AdbClient.supported()) return
 
         if (Build.VERSION.SDK_INT >= 31) {
             val tl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            tl.bottomMargin = dp(6)
+            tl.bottomMargin = ui(6)
             c.addView(
                 toggleRow("Mở khóa chạm xuyên (Android 12+)", Store.unblockTouch(this)) {
                     AdbClient.setUnblock(applicationContext, it)
@@ -1721,14 +1755,14 @@ class OverlayService : Service() {
         val btns = LinearLayout(this)
         btns.orientation = LinearLayout.HORIZONTAL
         val off = AdbClient.state == AdbClient.State.OFF
-        btns.addView(actionBtn("Kết nối", off) { AdbClient.connect(applicationContext) }, weighted(dp(36), 0, dp(2)))
-        btns.addView(actionBtn("Ngắt", false, true) { AdbClient.disconnect() }, weighted(dp(36), dp(2), dp(2)))
+        btns.addView(actionBtn("Kết nối", off) { AdbClient.connect(applicationContext) }, weighted(ui(36), 0, ui(2)))
+        btns.addView(actionBtn("Ngắt", false, true) { AdbClient.disconnect() }, weighted(ui(36), ui(2), ui(2)))
         btns.addView(
             actionBtn(if (pairOpen) "Ghép cặp ▴" else "Ghép cặp ▾", false) {
                 pairOpen = !pairOpen
                 refreshPanel()
             },
-            weighted(dp(36), dp(2), 0)
+            weighted(ui(36), ui(2), 0)
         )
         c.addView(btns)
 
@@ -1740,22 +1774,22 @@ class OverlayService : Service() {
                     "Gõ ở ô dưới, hoặc bấm \"Gửi thông báo nhập mã\" rồi gõ mã ngay trong thông báo.",
             11f, Theme.MUTED
         )
-        hint.setPadding(dp(2), dp(8), dp(2), dp(4))
+        hint.setPadding(ui(2), ui(8), ui(2), ui(4))
         c.addView(hint)
 
         val pr = LinearLayout(this)
         pr.orientation = LinearLayout.HORIZONTAL
         pr.gravity = Gravity.CENTER_VERTICAL
         val codeEt = numField("Mã 6 số", pairCode) { pairCode = it }
-        val l2 = LinearLayout.LayoutParams(0, dp(40), 1f)
-        l2.setMargins(0, 0, dp(6), 0)
+        val l2 = LinearLayout.LayoutParams(0, ui(40), 1f)
+        l2.setMargins(0, 0, ui(6), 0)
         pr.addView(codeEt, l2)
-        pr.addView(actionBtn("Ghép", true) { doPair() }, LinearLayout.LayoutParams(dp(72), dp(40)))
+        pr.addView(actionBtn("Ghép", true) { doPair() }, LinearLayout.LayoutParams(ui(72), ui(40)))
         c.addView(pr)
 
         val notif = actionBtn("Gửi thông báo nhập mã", false) { sendPairNotif() }
-        val nl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(36))
-        nl.topMargin = dp(6)
+        val nl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ui(36))
+        nl.topMargin = ui(6)
         c.addView(notif, nl)
 
         val dev = actionBtn("Mở Tùy chọn nhà phát triển", false) {
@@ -1767,9 +1801,18 @@ class OverlayService : Service() {
                 toast("Không mở được Tùy chọn nhà phát triển")
             }
         }
-        val dl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(36))
-        dl.topMargin = dp(6)
+        val dl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ui(36))
+        dl.topMargin = ui(6)
         c.addView(dev, dl)
+    }
+
+    /** Đổi cỡ giao diện nổi rồi dựng lại giao diện (đăng sau 1 nhịp để không gỡ cửa sổ ngay trong lúc đang xử lý chạm). */
+    private fun changeUiScale(pct: Int) {
+        val v = pct.coerceIn(50, 130)
+        if (v == Store.uiScale(this)) return
+        Store.setUiScale(this, v)
+        updateUiScale()
+        handler.post { rebuildAll() }
     }
 
     private fun sendPairNotif() {
@@ -1802,24 +1845,24 @@ class OverlayService : Service() {
 
     private fun buildAddContent(c: LinearLayout) {
         c.removeAllViews()
-        val rowH = dp(42)
+        val rowH = ui(42)
 
         buildModeSection(c)
-        c.addView(View(this), LinearLayout.LayoutParams(1, dp(8)))
+        c.addView(View(this), LinearLayout.LayoutParams(1, ui(8)))
         buildCrossSection(c)
-        c.addView(View(this), LinearLayout.LayoutParams(1, dp(8)))
+        c.addView(View(this), LinearLayout.LayoutParams(1, ui(8)))
 
         val r1 = LinearLayout(this)
         r1.orientation = LinearLayout.HORIZONTAL
-        r1.addView(actionBtn("+  Nút macro", true) { addNum() }, weighted(rowH, 0, dp(4)))
-        r1.addView(actionBtn("◎  Nút trung tâm", false) { addMain() }, weighted(rowH, dp(4), 0))
+        r1.addView(actionBtn("+  Nút macro", true) { addNum() }, weighted(rowH, 0, ui(4)))
+        r1.addView(actionBtn("◎  Nút trung tâm", false) { addMain() }, weighted(rowH, ui(4), 0))
         c.addView(r1)
 
         val r1a = LinearLayout(this)
         r1a.orientation = LinearLayout.HORIZONTAL
         r1a.addView(actionBtn("⌖  Nút vuốt tâm", false) { addAim() }, weighted(rowH, 0, 0))
         val r1alp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        r1alp.topMargin = dp(6)
+        r1alp.topMargin = ui(6)
         c.addView(r1a, r1alp)
 
         // chọn main để nối nút số vào (mỗi main có số 1, 2, 3... riêng)
@@ -1828,7 +1871,7 @@ class OverlayService : Service() {
         val r1b = LinearLayout(this)
         r1b.orientation = LinearLayout.HORIZONTAL
         r1b.gravity = Gravity.CENTER_VERTICAL
-        r1b.addView(label("Nút số thuộc", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
+        r1b.addView(label("Nút số thuộc", 12f, Theme.MUTED), LinearLayout.LayoutParams(ui(96), ViewGroup.LayoutParams.WRAP_CONTENT))
         r1b.addView(
             actionBtn(if (tm == 0) "Chưa có main — tạo nút trung tâm" else "main$tm   ⟳", false) {
                 if (mains.size > 1) {
@@ -1836,10 +1879,10 @@ class OverlayService : Service() {
                     refreshPanel()
                 }
             },
-            LinearLayout.LayoutParams(0, dp(36), 1f)
+            LinearLayout.LayoutParams(0, ui(36), 1f)
         )
         val r1blp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        r1blp.topMargin = dp(8)
+        r1blp.topMargin = ui(8)
         c.addView(r1b, r1blp)
 
         // tên macro + lưu
@@ -1851,12 +1894,12 @@ class OverlayService : Service() {
         et.hint = "Tên macro..."
         et.setHintTextColor(Theme.MUTED)
         et.setTextColor(Theme.TEXT)
-        et.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f)
+        et.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f * uiK)
         et.setSingleLine(true)
         et.inputType = InputType.TYPE_CLASS_TEXT
         et.imeOptions = EditorInfo.IME_ACTION_DONE or EditorInfo.IME_FLAG_NO_EXTRACT_UI
-        et.setPadding(dp(12), 0, dp(12), 0)
-        et.background = roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.STROKE, dp(1))
+        et.setPadding(ui(12), 0, ui(12), 0)
+        et.background = roundedBg(Theme.FIELD, ui(12).toFloat(), Theme.STROKE, ui(1))
         et.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, st: Int, c1: Int, a: Int) {}
             override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c1: Int) {}
@@ -1883,11 +1926,11 @@ class OverlayService : Service() {
         }
         nameInput = et
         val r2lp = LinearLayout.LayoutParams(0, rowH, 1f)
-        r2lp.setMargins(0, 0, dp(6), 0)
+        r2lp.setMargins(0, 0, ui(6), 0)
         r2.addView(et, r2lp)
-        r2.addView(actionBtn("Lưu macro", true) { saveMacro() }, LinearLayout.LayoutParams(dp(104), rowH))
+        r2.addView(actionBtn("Lưu macro", true) { saveMacro() }, LinearLayout.LayoutParams(ui(104), rowH))
         val r2wrap = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        r2wrap.topMargin = dp(8)
+        r2wrap.topMargin = ui(8)
         c.addView(r2, r2wrap)
 
         // dropdown chọn macro: bấm vào sẽ mở popup nổi (có ô tìm kiếm, kéo lên xuống để chọn)
@@ -1897,39 +1940,39 @@ class OverlayService : Service() {
             13f, Theme.TEXT
         )
         dd.gravity = Gravity.CENTER_VERTICAL
-        dd.setPadding(dp(12), 0, dp(12), 0)
-        dd.background = roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.STROKE, dp(1))
+        dd.setPadding(ui(12), 0, ui(12), 0)
+        dd.background = roundedBg(Theme.FIELD, ui(12).toFloat(), Theme.STROKE, ui(1))
         dd.setOnClickListener {
             setPanelFocusable(false)
             if (names.isNotEmpty()) showMacroPicker()
         }
         val r3 = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, rowH)
-        r3.topMargin = dp(8)
+        r3.topMargin = ui(8)
         c.addView(dd, r3)
 
         // xuất / nhập macro ra tệp để chia sẻ
         val rs = LinearLayout(this)
         rs.orientation = LinearLayout.HORIZONTAL
-        rs.addView(actionBtn("Xuất macro", false) { exportMacro() }, weighted(dp(38), 0, dp(4)))
-        rs.addView(actionBtn("Nhập macro", false) { importMacro() }, weighted(dp(38), dp(4), 0))
+        rs.addView(actionBtn("Xuất macro", false) { exportMacro() }, weighted(ui(38), 0, ui(4)))
+        rs.addView(actionBtn("Nhập macro", false) { importMacro() }, weighted(ui(38), ui(4), 0))
         val rslp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        rslp.topMargin = dp(8)
+        rslp.topMargin = ui(8)
         c.addView(rs, rslp)
 
         // xoá macro đã lưu / xoá tất cả nút
         val r4 = LinearLayout(this)
         r4.orientation = LinearLayout.HORIZONTAL
-        r4.addView(actionBtn("Xóa macro đã lưu", false, true) { deleteSavedMacro() }, weighted(dp(38), 0, dp(4)))
-        r4.addView(actionBtn("Xóa hết nút", false, true) { clearAll() }, weighted(dp(38), dp(4), 0))
+        r4.addView(actionBtn("Xóa macro đã lưu", false, true) { deleteSavedMacro() }, weighted(ui(38), 0, ui(4)))
+        r4.addView(actionBtn("Xóa hết nút", false, true) { clearAll() }, weighted(ui(38), ui(4), 0))
         val r4lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        r4lp.topMargin = dp(8)
+        r4lp.topMargin = ui(8)
         c.addView(r4, r4lp)
 
         val hint = label(
             "Kéo nút để đặt vị trí  ·  Chạm vào nút để chỉnh  ·  Nút số được đánh số riêng theo từng main  ·  Lúc setup nút luôn hiện tối thiểu 20%  ·  Bấm ✕ để chạy macro",
             11f, Theme.MUTED
         )
-        hint.setPadding(dp(2), dp(8), dp(2), 0)
+        hint.setPadding(ui(2), ui(8), ui(2), 0)
         c.addView(hint)
     }
 
@@ -1968,7 +2011,7 @@ class OverlayService : Service() {
         fun stepBtn(sym: String, dir: Int): TextView {
             val t = label(sym, 16f, Theme.ACCENT, true)
             t.gravity = Gravity.CENTER
-            t.background = roundedBg(Theme.FIELD, dp(8).toFloat(), Theme.STROKE, dp(1))
+            t.background = roundedBg(Theme.FIELD, ui(8).toFloat(), Theme.STROKE, ui(1))
             t.isClickable = true
             val rep = object : Runnable {
                 override fun run() {
@@ -1995,13 +2038,13 @@ class OverlayService : Service() {
             return t
         }
 
-        top.addView(stepBtn("−", -1), LinearLayout.LayoutParams(dp(32), dp(28)))
-        top.addView(vt, LinearLayout.LayoutParams(dp(56), ViewGroup.LayoutParams.WRAP_CONTENT))
-        top.addView(stepBtn("+", 1), LinearLayout.LayoutParams(dp(32), dp(28)))
+        top.addView(stepBtn("−", -1), LinearLayout.LayoutParams(ui(32), ui(28)))
+        top.addView(vt, LinearLayout.LayoutParams(ui(56), ViewGroup.LayoutParams.WRAP_CONTENT))
+        top.addView(stepBtn("+", 1), LinearLayout.LayoutParams(ui(32), ui(28)))
 
         val chip = label("×$step", 12f, Color.parseColor("#0B120A"), true)
         chip.gravity = Gravity.CENTER
-        chip.background = roundedBg(Theme.ACCENT, dp(8).toFloat())
+        chip.background = roundedBg(Theme.ACCENT, ui(8).toFloat())
         chip.isClickable = true
         chip.setOnClickListener {
             setPanelFocusable(false)
@@ -2009,8 +2052,8 @@ class OverlayService : Service() {
             Store.setSliderStep(this, stepKey, step)
             chip.text = "×$step"
         }
-        val cl = LinearLayout.LayoutParams(dp(40), dp(28))
-        cl.leftMargin = dp(6)
+        val cl = LinearLayout.LayoutParams(ui(40), ui(28))
+        cl.leftMargin = ui(6)
         top.addView(chip, cl)
         col.addView(top, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
@@ -2031,7 +2074,7 @@ class OverlayService : Service() {
                 onChange(s.progress + min, true)
             }
         })
-        col.addView(sb, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(32)))
+        col.addView(sb, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ui(32)))
         return col
     }
 
@@ -2042,7 +2085,7 @@ class OverlayService : Service() {
         val nameRow = LinearLayout(this)
         nameRow.orientation = LinearLayout.HORIZONTAL
         nameRow.gravity = Gravity.CENTER_VERTICAL
-        nameRow.addView(label("Tên nút", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
+        nameRow.addView(label("Tên nút", 12f, Theme.MUTED), LinearLayout.LayoutParams(ui(96), ViewGroup.LayoutParams.WRAP_CONTENT))
         val nameEt = textField(
             if (b.kind == Kind.MAIN) "main${b.number}" else if (b.kind == Kind.AIM) "AIM" else b.number.toString(),
             b.name,
@@ -2053,9 +2096,9 @@ class OverlayService : Service() {
             btnViews[b.id]?.invalidate()
             persist()
         }
-        nameRow.addView(nameEt, LinearLayout.LayoutParams(0, dp(36), 1f))
+        nameRow.addView(nameEt, LinearLayout.LayoutParams(0, ui(36), 1f))
         val nl0 = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        nl0.bottomMargin = dp(4)
+        nl0.bottomMargin = ui(4)
         c.addView(nameRow, nl0)
 
         c.addView(sliderRow("Kích thước", 28, 140, b.sizeDp, { "${it}dp" }) { v, done ->
@@ -2079,7 +2122,7 @@ class OverlayService : Service() {
             val row = LinearLayout(this)
             row.orientation = LinearLayout.HORIZONTAL
             row.gravity = Gravity.CENTER_VERTICAL
-            row.addView(label("Thuộc main", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
+            row.addView(label("Thuộc main", 12f, Theme.MUTED), LinearLayout.LayoutParams(ui(96), ViewGroup.LayoutParams.WRAP_CONTENT))
             val mains = mainNumbers()
             val options = if (b.mainNo == 0) listOf(0) + mains else mains
             val cur = options.indexOf(b.mainNo).coerceAtLeast(0)
@@ -2091,10 +2134,10 @@ class OverlayService : Service() {
                         refreshPanel()
                     }
                 },
-                LinearLayout.LayoutParams(0, dp(36), 1f)
+                LinearLayout.LayoutParams(0, ui(36), 1f)
             )
             val rl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            rl.topMargin = dp(4)
+            rl.topMargin = ui(4)
             c.addView(row, rl)
         } else if (b.kind == Kind.AIM) {
             buildAimSection(c, b)
@@ -2102,7 +2145,7 @@ class OverlayService : Service() {
             val row = LinearLayout(this)
             row.orientation = LinearLayout.HORIZONTAL
             row.gravity = Gravity.CENTER_VERTICAL
-            row.addView(label("Kích hoạt", 12f, Theme.MUTED), LinearLayout.LayoutParams(dp(96), ViewGroup.LayoutParams.WRAP_CONTENT))
+            row.addView(label("Kích hoạt", 12f, Theme.MUTED), LinearLayout.LayoutParams(ui(96), ViewGroup.LayoutParams.WRAP_CONTENT))
             val opts = listOf(TRIG_PRESS to "Khi ấn", TRIG_RELEASE to "Khi thả", TRIG_HOLD to "Giữ lặp")
             for ((i, o) in opts.withIndex()) {
                 row.addView(
@@ -2111,14 +2154,14 @@ class OverlayService : Service() {
                         persist()
                         refreshPanel()
                     },
-                    weighted(dp(36), if (i == 0) 0 else dp(2), if (i == opts.size - 1) 0 else dp(2))
+                    weighted(ui(36), if (i == 0) 0 else ui(2), if (i == opts.size - 1) 0 else ui(2))
                 )
             }
             val rl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            rl.topMargin = dp(4)
+            rl.topMargin = ui(4)
             c.addView(row, rl)
             val pl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            pl.topMargin = dp(4)
+            pl.topMargin = ui(4)
             c.addView(toggleRow("Chạm xuyên", b.passThru) { on ->
                 b.passThru = on
                 persist()
@@ -2131,21 +2174,21 @@ class OverlayService : Service() {
                 else "Bật nhưng CHƯA hoạt động: cần chế độ Gỡ lỗi WiFi đã kết nối (để đọc ngón tay). Tạm thời nút vẫn chặn cảm ứng.",
                 11f, Theme.MUTED
             )
-            passNote.setPadding(dp(2), dp(6), dp(2), 0)
+            passNote.setPadding(ui(2), ui(6), ui(2), 0)
             c.addView(passNote)
             if (b.trigger == TRIG_HOLD) {
                 val note = label("Giữ ngón tay trên nút main: chuỗi cứ lặp đi lặp lại, thả tay là dừng.", 11f, Theme.MUTED)
-                note.setPadding(dp(2), dp(6), dp(2), 0)
+                note.setPadding(ui(2), ui(6), ui(2), 0)
                 c.addView(note)
             }
         }
 
         val bottom = LinearLayout(this)
         bottom.orientation = LinearLayout.HORIZONTAL
-        bottom.addView(actionBtn("Xong", true) { deselect() }, weighted(dp(40), 0, dp(4)))
-        bottom.addView(actionBtn("Xóa nút này", false, true) { deleteButton(b) }, weighted(dp(40), dp(4), 0))
+        bottom.addView(actionBtn("Xong", true) { deselect() }, weighted(ui(40), 0, ui(4)))
+        bottom.addView(actionBtn("Xóa nút này", false, true) { deleteButton(b) }, weighted(ui(40), ui(4), 0))
         val bl = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        bl.topMargin = dp(8)
+        bl.topMargin = ui(8)
         c.addView(bottom, bl)
     }
 
@@ -2169,10 +2212,10 @@ class OverlayService : Service() {
             else "CHƯA hoạt động: nút vuốt tâm cần chế độ Gỡ lỗi WiFi đã kết nối (để đọc và điều khiển ngón tay). Chưa có thì vòng chỉ là hình, game vẫn chạm bình thường.",
             11f, Theme.MUTED
         )
-        note.setPadding(dp(2), dp(6), dp(2), 0)
+        note.setPadding(ui(2), ui(6), ui(2), 0)
         c.addView(note)
         val tip = label("Mượt cao = ổn định hơn nhưng hơi trễ khi vuốt chậm. Tăng lực 100% = giữ nguyên quãng vuốt. Hiệu ứng chỉ có khi đã bấm ✕ (đang chạy macro).", 11f, Theme.MUTED)
-        tip.setPadding(dp(2), dp(6), dp(2), 0)
+        tip.setPadding(ui(2), ui(6), ui(2), 0)
         c.addView(tip)
     }
 
@@ -2182,7 +2225,7 @@ class OverlayService : Service() {
         buttons.add(
             MacroButton(
                 id = nextId(), kind = Kind.AIM, number = n,
-                x = sw - dp(130) - ((n - 1) % 3) * dp(100), y = sh / 2 + ((n - 1) / 3) * dp(100),
+                x = sw - ui(130) - ((n - 1) % 3) * ui(100), y = sh / 2 + ((n - 1) / 3) * ui(100),
                 sizeDp = 96, alphaPct = 80, delayMs = 0,
                 mainNo = 0, trigger = TRIG_PRESS
             )
@@ -2452,15 +2495,15 @@ class OverlayService : Service() {
         root.setBackgroundColor(Color.parseColor("#99000000"))
         root.setOnClickListener { dismissMacroPicker(true) } // bấm ra ngoài -> đóng
 
-        val cardW = minOf(sw - dp(32), dp(360))
-        val maxListH = if (portrait) minOf((sh * 0.42f).toInt(), dp(340)) else (sh * 0.30f).toInt()
+        val cardW = minOf(sw - ui(32), ui(360))
+        val maxListH = if (portrait) minOf((sh * 0.42f).toInt(), ui(340)) else (sh * 0.30f).toInt()
 
         val card = LinearLayout(this)
         card.orientation = LinearLayout.VERTICAL
-        card.background = roundedBg(Color.parseColor("#FF101510"), dp(20).toFloat(), Theme.STROKE, dp(1))
-        card.setPadding(dp(12), dp(12), dp(12), dp(12))
+        card.background = roundedBg(Color.parseColor("#FF101510"), ui(20).toFloat(), Theme.STROKE, ui(1))
+        card.setPadding(ui(12), ui(12), ui(12), ui(12))
         card.isClickable = true // nuốt chạm trong thẻ, không đóng nhầm
-        card.elevation = dp(12).toFloat()
+        card.elevation = ui(12).toFloat()
 
         val head = LinearLayout(this)
         head.orientation = LinearLayout.HORIZONTAL
@@ -2475,13 +2518,13 @@ class OverlayService : Service() {
         search.hint = "🔍  Tìm macro..."
         search.setHintTextColor(Theme.MUTED)
         search.setTextColor(Theme.TEXT)
-        search.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f)
+        search.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f * uiK)
         search.setSingleLine(true)
         search.imeOptions = EditorInfo.IME_ACTION_DONE
-        search.setPadding(dp(12), 0, dp(12), 0)
-        search.background = roundedBg(Theme.FIELD, dp(12).toFloat(), Theme.STROKE, dp(1))
-        val slp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42))
-        slp.topMargin = dp(10)
+        search.setPadding(ui(12), 0, ui(12), 0)
+        search.background = roundedBg(Theme.FIELD, ui(12).toFloat(), Theme.STROKE, ui(1))
+        val slp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ui(42))
+        slp.topMargin = ui(10)
         card.addView(search, slp)
 
         val list = LinearLayout(this)
@@ -2491,7 +2534,7 @@ class OverlayService : Service() {
         sv.overScrollMode = View.OVER_SCROLL_NEVER
         sv.addView(list, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         val svlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        svlp.topMargin = dp(8)
+        svlp.topMargin = ui(8)
         card.addView(sv, svlp)
 
         val current = nameDraft.trim()
@@ -2503,7 +2546,7 @@ class OverlayService : Service() {
             if (shown.isEmpty()) {
                 val e = label("Không tìm thấy macro nào", 13f, Theme.MUTED)
                 e.gravity = Gravity.CENTER
-                e.setPadding(0, dp(22), 0, dp(22))
+                e.setPadding(0, ui(22), 0, ui(22))
                 list.addView(e, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
                 return
             }
@@ -2513,10 +2556,10 @@ class OverlayService : Service() {
                 item.maxLines = 1
                 item.ellipsize = android.text.TextUtils.TruncateAt.END
                 item.gravity = Gravity.CENTER_VERTICAL
-                item.setPadding(dp(14), 0, dp(14), 0)
+                item.setPadding(ui(14), 0, ui(14), 0)
                 val sl = android.graphics.drawable.StateListDrawable()
-                sl.addState(intArrayOf(android.R.attr.state_pressed), roundedBg(Color.parseColor("#553C7A24"), dp(10).toFloat()))
-                sl.addState(intArrayOf(), roundedBg(if (isCur) Color.parseColor("#223C7A24") else Color.TRANSPARENT, dp(10).toFloat()))
+                sl.addState(intArrayOf(android.R.attr.state_pressed), roundedBg(Color.parseColor("#553C7A24"), ui(10).toFloat()))
+                sl.addState(intArrayOf(), roundedBg(if (isCur) Color.parseColor("#223C7A24") else Color.TRANSPARENT, ui(10).toFloat()))
                 item.background = sl
                 item.isClickable = true
                 item.setOnClickListener {
@@ -2532,8 +2575,8 @@ class OverlayService : Service() {
                         toast("Đã tải macro: $n")
                     }
                 }
-                val ilp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44))
-                ilp.bottomMargin = dp(2)
+                val ilp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ui(44))
+                ilp.bottomMargin = ui(2)
                 list.addView(item, ilp)
             }
         }
@@ -2568,7 +2611,7 @@ class OverlayService : Service() {
 
         val clp = android.widget.FrameLayout.LayoutParams(cardW, ViewGroup.LayoutParams.WRAP_CONTENT)
         clp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        clp.topMargin = if (portrait) dp(72) else dp(12)
+        clp.topMargin = if (portrait) ui(72) else ui(12)
         root.addView(card, clp)
 
         // cửa sổ nổi riêng (nhận chạm + bàn phím), nằm trên bảng setup
@@ -2593,7 +2636,7 @@ class OverlayService : Service() {
         // animation mở: nền mờ dần + thẻ trượt xuống, phóng nhẹ
         root.alpha = 0f
         card.alpha = 0f
-        card.translationY = -dp(18).toFloat()
+        card.translationY = -ui(18).toFloat()
         card.scaleX = 0.94f
         card.scaleY = 0.94f
         card.pivotX = cardW / 2f
@@ -2628,7 +2671,7 @@ class OverlayService : Service() {
         } catch (_: Exception) {
         }
         val card = (root as? ViewGroup)?.getChildAt(0)
-        card?.animate()?.alpha(0f)?.translationY(-dp(12).toFloat())?.scaleX(0.96f)?.scaleY(0.96f)
+        card?.animate()?.alpha(0f)?.translationY(-ui(12).toFloat())?.scaleX(0.96f)?.scaleY(0.96f)
             ?.setDuration(150)?.setInterpolator(android.view.animation.AccelerateInterpolator())?.start()
         root.animate().alpha(0f).setDuration(170).withEndAction {
             if (pickerRoot === root) {
