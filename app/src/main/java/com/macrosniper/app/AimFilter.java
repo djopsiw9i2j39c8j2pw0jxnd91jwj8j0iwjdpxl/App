@@ -10,9 +10,10 @@ package com.macrosniper.app;
  *     chết thu về 0 -> đổi hướng, đổi góc không còn bị "dính" lại.
  *  3. Tăng lực vuốt tính theo QUÃNG DI CHUYỂN TỪNG KHUNG (delta), không tính theo khoảng cách tới điểm đặt tay:
  *     ngón ảo = ngón ảo cũ + delta_đã_lọc * gain. Nhờ vậy hướng đẩy luôn bám theo hướng ngón thật đang đi.
- *  4. Chạm mép: ngón ảo sắp ra khỏi màn hình theo hướng đang đi thì [needRebase] báo true; bên ngoài nhấc ngón ảo lên
- *     và đặt lại ở phía sau hướng đi ([rebase]) để vuốt tiếp không bị kẹt ở mép (trước đây bị kẹp cứng từng trục
- *     nên chỉ còn đi được theo đường thẳng tuyệt đối).
+ *  4. Chạm mép: KHÔNG nhấc ngón nữa (nhấc + đặt lại làm game tưởng đã thả tay -> nút bắn bị ngắt / giật). Ngón ảo cứ
+ *     đi tiếp, được phép vượt ra ngoài mép màn hình tới [OVERSHOOT] lần cạnh dài ([outX] / [outY]); game chỉ đọc độ
+ *     dời của ngón nên vuốt liền mạch, ngón không bao giờ bị thả. Chỉ khi đi quá xa (hiếm) [needRebase] mới báo true để
+ *     nhấc + đặt lại ([rebase]). Đặt [ALLOW_OFFSCREEN] = false để quay về kiểu cũ (nhấc + đặt lại ngay khi sát mép).
  *  5. Nhấc tay: [finish] chốt ngón ảo tại đúng vị trí cuối của ngón thật (không bị bỏ lại phía sau -> hết khựng).
  *
  * Đầu ra = vị trí ngón "ảo" mà app bơm vào hệ thống thay cho ngón thật.
@@ -28,6 +29,10 @@ final class AimFilter {
     static final double DEAD_OFF_SPEED = 160.0;
     /** Khoảng cách tối thiểu giữa 2 lần đặt lại ngón ảo (ns). */
     static final long REBASE_GAP_NS = 60_000_000L;
+    /** true: ngón ảo được đi tiếp ra ngoài mép (không nhấc tay). false: kiểu cũ, sát mép là nhấc + đặt lại. */
+    static final boolean ALLOW_OFFSCREEN = true;
+    /** Được vượt ra ngoài mép tối đa bao nhiêu lần cạnh dài của màn hình (mỗi phía). */
+    static final double OVERSHOOT = 2.0;
 
     private final float zx, zy, zr;  // vòng vuốt tâm (để đặt lại ngón khi chạm mép)
     private final int smooth;        // 0..100
@@ -136,10 +141,20 @@ final class AimFilter {
         return Math.max(16.0, 0.07 * Math.min(w, h)); // chừa vùng cử chỉ vuốt mép của hệ thống
     }
 
+    /**
+     * Ngưỡng KÍCH HOẠT đặt lại: chỉ cần sát mép thật sự. Hệ thống chỉ bắt cử chỉ vuốt mép lúc ngón vừa CHẠM XUỐNG,
+     * còn ngón đang vuốt dở trượt tới mép thì không sao -> không cần chừa vùng 7% như lúc đặt ngón lại ([margin]).
+     * Trước đây dùng chung [margin] để kích hoạt: vòng vuốt tâm đặt cao / sát mép thì ngón ảo chạm ngưỡng sau vài chục
+     * px, nhấc + đặt lại liên tục -> nút bắn của game bị giật lên xuống.
+     */
+    private double triggerMargin(float w, float h) {
+        return Math.max(6.0, 0.012 * Math.min(w, h));
+    }
+
     /** Ngón ảo đang chạm / sắp ra mép màn hình THEO HƯỚNG ĐANG ĐI (đi vào trong thì không tính). */
     boolean needRebase(float w, float h, long nowNs) {
         if (nowNs - rebaseNs < REBASE_GAP_NS) return false;
-        double m = margin(w, h);
+        double m = ALLOW_OFFSCREEN ? -overshootPx(w, h) : triggerMargin(w, h);
         return (gx < m && vx < 0) || (gx > w - 1 - m && vx > 0) || (gy < m && vy < 0) || (gy > h - 1 - m && vy > 0);
     }
 
@@ -165,11 +180,19 @@ final class AimFilter {
         rebaseNs = nowNs;
     }
 
-    float x() {
-        return (float) gx;
+    private static double overshootPx(float w, float h) {
+        return OVERSHOOT * Math.max(w, h);
     }
 
-    float y() {
-        return (float) gy;
+    /** Toạ độ X để bơm: trong màn hình, hoặc (nếu [ALLOW_OFFSCREEN]) được vượt ra ngoài mép một đoạn dài. */
+    float outX(float w, float h) {
+        double o = ALLOW_OFFSCREEN ? overshootPx(w, h) : 0.0;
+        return (float) Math.max(-o, Math.min(w - 1.0 + o, gx));
+    }
+
+    /** Toạ độ Y để bơm (xem [outX]). */
+    float outY(float w, float h) {
+        double o = ALLOW_OFFSCREEN ? overshootPx(w, h) : 0.0;
+        return (float) Math.max(-o, Math.min(h - 1.0 + o, gy));
     }
 }

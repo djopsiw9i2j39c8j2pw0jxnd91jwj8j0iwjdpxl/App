@@ -891,7 +891,7 @@ public final class GhostTouch implements Toucher {
                     AimFilter af = k < aim.length ? aim[k] : null;
                     if (af != null && !real(k)) { // nhấc tay: chốt ngón ảo ở điểm cuối của ngón thật rồi mới nhấc
                         af.finish(screen(k, true), screen(k, false));
-                        float fx = Math.max(0f, Math.min(w - 1f, af.x())), fy = Math.max(0f, Math.min(h - 1f, af.y()));
+                        float fx = af.outX(w, h), fy = af.outY(w, h);
                         if (Math.abs(fx - xs[i]) >= 0.5f || Math.abs(fy - ys[i]) >= 0.5f) {
                             xs[i] = fx;
                             ys[i] = fy;
@@ -917,12 +917,12 @@ public final class GhostTouch implements Toucher {
                         af.rebase(w, h, now);
                         removeAt(i); // xoá luôn aim[k] -> gắn lại ngay sau đó
                         aim[k] = af;
-                        addPointer(k, Math.max(0f, Math.min(w - 1f, af.x())), Math.max(0f, Math.min(h - 1f, af.y())));
+                        addPointer(k, af.outX(w, h), af.outY(w, h));
                         i--; // phần tử sau dồn lên vị trí i; ngón vừa đặt lại nằm cuối mảng
                         continue;
                     }
-                    x = Math.max(0f, Math.min(w - 1f, af.x()));
-                    y = Math.max(0f, Math.min(h - 1f, af.y()));
+                    x = af.outX(w, h);
+                    y = af.outY(w, h);
                 }
                 if (Math.abs(x - xs[i]) >= 0.5f || Math.abs(y - ys[i]) >= 0.5f) {
                     xs[i] = x;
