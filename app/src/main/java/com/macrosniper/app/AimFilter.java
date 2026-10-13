@@ -27,6 +27,13 @@ final class AimFilter {
     static final double D_CUT = 12.0;
     /** Tốc độ (px/s) mà từ đó vùng chết thu về 0. */
     static final double DEAD_OFF_SPEED = 160.0;
+    /**
+     * Thời hằng (giây) "giữ tốc độ đỉnh". Lúc ĐỔI HƯỚNG tốc độ ngón tụt về ~0 trong vài khung: nếu dùng thẳng tốc độ đó thì
+     * vùng chết bật lại + bộ lọc siết chặt đúng lúc ngón vừa quay đầu -> ngón ảo đứng khựng một nhịp. Giữ tốc độ đỉnh
+     * giảm dần (không tụt tức thì) thì vùng chết vẫn tắt và bộ lọc vẫn thoáng qua khúc đảo chiều; ngón thật sự dừng
+     * quá ~0,15 giây thì chống rung quay lại như cũ.
+     */
+    static final double HOLD_TAU = 0.08;
     /** Khoảng cách tối thiểu giữa 2 lần đặt lại ngón ảo (ns). */
     static final long REBASE_GAP_NS = 60_000_000L;
     /** true: ngón ảo được đi tiếp ra ngoài mép (không nhấc tay). false: kiểu cũ, sát mép là nhấc + đặt lại. */
@@ -44,6 +51,7 @@ final class AimFilter {
     private double qx, qy;           // ox, oy của lần trước (để lấy delta)
     private double px, py;           // mẫu thô trước đó
     private double vx, vy;           // tốc độ ước lượng (px/s)
+    private double peak;             // tốc độ đỉnh đang giảm dần (px/s), xem HOLD_TAU
     private double gx, gy;           // ngón ảo (đầu ra, chưa kẹp)
     private long lastNs;             // lần gọi update gần nhất
     private long sampleNs;           // lần gần nhất có mẫu thô MỚI
@@ -95,6 +103,9 @@ final class AimFilter {
             vy -= ad * vy;
         }
         double speed = Math.hypot(vx, vy);
+        // tốc độ dùng để quyết định mức lọc / vùng chết: giữ đỉnh, giảm dần -> qua khúc đổi hướng không bị khựng
+        peak = Math.max(speed, peak * Math.exp(-dt / HOLD_TAU));
+        speed = peak;
 
         if (smooth <= 0) {
             fx = x;
