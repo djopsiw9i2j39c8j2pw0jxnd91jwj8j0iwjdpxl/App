@@ -431,6 +431,17 @@ class OverlayService : Service() {
         uiK = auto * Store.uiScale(this) / 100f
     }
 
+    /** Chiều cao thanh trạng thái (giờ, tin nhắn, wifi, pin) / tai thỏ phía trên, để đặt giao diện nổi tránh ra. */
+    private fun statusBarPx(): Int {
+        var h = 0
+        try {
+            val id = resources.getIdentifier("status_bar_height", "dimen", "android")
+            if (id > 0) h = resources.getDimensionPixelSize(id)
+        } catch (_: Exception) {
+        }
+        return maxOf(h, dp(24))
+    }
+
     private fun screenSize(): Pair<Int, Int> {
         try {
             val dmg = getSystemService(Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
@@ -1493,8 +1504,8 @@ class OverlayService : Service() {
         val width = minOf(sw - ui(16), ui(400))
         panelW = width
         val lp = baseLp(width, WindowManager.LayoutParams.WRAP_CONTENT, true)
-        lp.x =if (panelX >= 0) panelX.coerceIn(0, maxOf(0, sw - width)) else (sw - width) / 2
-        lp.y = if (panelY >= 0) panelY.coerceIn(0, maxOf(0, sh - ui(80))) else ui(8)
+        lp.x = if (panelX >= 0) panelX.coerceIn(0, maxOf(0, sw - width)) else (sw - width) / 2
+        lp.y = if (panelY >= 0) panelY.coerceIn(0, maxOf(0, sh - ui(80))) else statusBarPx() + ui(8) // mặc định nằm DƯỚI thanh trạng thái (giờ, wifi, pin...), không bị đè
         lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
 
         val root = PanelLayout(this)
