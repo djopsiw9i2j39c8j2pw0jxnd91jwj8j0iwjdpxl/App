@@ -20,7 +20,7 @@ class ApiException(val code: Int, message: String) : IOException(message) {
 
 object Gemini {
     private const val ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-    private const val MODEL = "gemini-3.6-flash"
+    private const val MODEL = "gemini-3.5-flash"
     private const val MAX_HISTORY = 30
     private const val MAX_MEDIA_MESSAGES = 2
 
